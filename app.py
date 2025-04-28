@@ -1,11 +1,8 @@
 import streamlit as st
 import pandas as pd
 import io
-import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px  # 
-import re
-from collections import Counter
 from kpi import process_data
 
 # Configuración inicial de la app
@@ -344,7 +341,9 @@ if archivo:
         st.metric(label="🔥 Total Técnicos con EPP Crítico", value=total_tecnicos_stock_critico_epp)
         st.metric(label="🚀 Total Técnicos con Herramientas Críticas", value=total_tecnicos_stock_critico_herramientas)
 
-        
+        if archivo:
+            # Llamamos a la función de KPIs
+            kpis, empresa_kpis_df, total_auditorias, data = process_data(archivo)
         
 
     with tab2:
