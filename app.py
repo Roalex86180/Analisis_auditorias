@@ -19,7 +19,7 @@ if archivo:
     # Cargar todas las hojas del archivo Excel
     xls = pd.ExcelFile(archivo)
     hojas = xls.sheet_names
-    data = pd.concat([xls.parse(hoja) for hoja in hojas], ignore_index=True)
+    data = pd.concat([xls.parse(hoja).astype(str) for hoja in hojas], ignore_index=True)
 
     
 
@@ -132,7 +132,7 @@ if archivo:
             return faltantes
 
         stock_critico_herramientas = (
-            data.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])
+            data.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])[herramientas_criticas]
             .apply(lambda x: obtener_herramientas_faltantes(x.iloc[0]))
             .reset_index()
             .rename(columns={0: "Herramientas Faltantes", "Nombre de Técnico/Copiar el del Wfm": "Técnico"})
@@ -242,7 +242,7 @@ if archivo:
 
         # Crear tabla de técnicos con EPP faltantes
         stock_critico_epp = (
-            data.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])
+            data.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])[epp_criticos]
             .apply(lambda x: obtener_epp_faltantes(x.iloc[0]))
             .reset_index()
             .rename(columns={0: "EPP Faltantes", "Nombre de Técnico/Copiar el del Wfm": "Técnico"})
@@ -306,7 +306,7 @@ if archivo:
         )
 
         # Gráfico por empresa
-        st.subheader("📈 Técnicos con Stock Crítico de EPP por Empresa (Interactivo)")
+        st.subheader("📈 Técnicos con Stock Crítico de EPP por Empresa")
 
         empresas_stock_critico_epp = (
             stock_critico_epp_general.groupby('Empresa')
@@ -350,7 +350,7 @@ if archivo:
 
         # ----------------- 🎯 Dashboard de Cumplimiento -----------------
             # Ranking de auditores por trabajos realizados
-        st.markdown("### 🧑‍💼 Ranking de Auditores por Trabajos Realizados")
+        st.markdown("### Ranking de Auditores por Trabajos Realizados")
         ranking_auditores = (
             data.groupby("Información del Auditor")
             .size()
