@@ -129,7 +129,7 @@ def process_data(uploaded_file):
             else:
                 df_filtered = df_finalizadas[df_finalizadas['Observaciones'].apply(func)]
             st.write(f"- {title.split('🔴 ')[1]}: {len(df_filtered)} casos")
-            st.dataframe(df_filtered[['Nombre de Técnico/Copiar el del Wfm', 'Observaciones /  Separe con comas los temas', 'Empresa', 'Region']].fillna(''))
+            st.dataframe(df_filtered[['Nombre de Técnico/Copiar el del Wfm', 'Observaciones /  Separe con comas los temas', 'Información del Auditor', 'Empresa', 'Region']].fillna(''))
 
     # Gráfico por empresa
     st.markdown("---")

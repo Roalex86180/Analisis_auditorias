@@ -7,7 +7,6 @@ from pt import process_data
 import unicodedata
 
 
-
 # Función para normalizar los nombres (eliminar acentos y tildes)
 def normalizar_texto(texto):
     if isinstance(texto, str):
@@ -23,7 +22,7 @@ st.title("📋 Análisis de Auditorías de Técnicos de Telecomunicaciones")
 # Subir archivo
 archivo = st.file_uploader("📁 Sube el archivo Excel con los datos de auditoría", type=["xlsx"])
 
-tab1, tab2 = st.tabs(["📋 Información de Técnicos", "🛠️ Información de Auditores"])
+tab1, tab2, = st.tabs(["📋 Información de Técnicos", "🛠️ Información de Auditores",])
 
 if archivo:
     # Cargar todas las hojas del archivo Excel
@@ -33,6 +32,29 @@ if archivo:
 
     # Normalizar columnas
     data.columns = data.columns.str.strip()
+
+            # Definir una función para generar contexto compacto
+    def generar_contexto(data):
+            return f"""
+        Estás analizando una base de datos con {data.shape[0]} registros de auditorías técnicas a técnicos de telecomunicaciones.
+        Cada registro contiene:
+        - Información del técnico, auditor, empresa y fecha.
+        - Lista de herramientas y materiales verificados.
+        - Observaciones y cumplimiento de estándares.
+        - Elementos de protección personal (EPP) y condiciones del vehículo.
+        Tu tarea es responder preguntas con base en los datos cargados.
+        """
+
+        # Consultar a Ollama con contexto y pregunta del usuario
+    def consultar_ollama(contexto, pregunta):
+            response = ollama.chat(
+                model='mistral',
+                messages=[
+                    {"role": "system", "content": contexto},
+                    {"role": "user", "content": pregunta}
+                ]
+            )
+            return response['message']['content']
 
     with tab1:
         # Opciones de filtro
@@ -494,13 +516,13 @@ if archivo:
             ).reset_index()
 
             # Mostrar el KPI
-            st.write("KPI de Distribución de Auditorías entre Empresas con Fechas")
+            st.markdown("Distribución de Auditorías entre Empresas con Fechas")
             st.dataframe(distribucion_auditorias)
         else:
             st.error("Faltan columnas necesarias para calcular el KPI de distribución de auditorías ('Información del Auditor', 'Empresa' y 'Fecha').")
 
             # ----------------- KPI: Auditorías por Región -----------------
-            # ----------------- KPI: Auditorías por Región -----------------
+            
         st.subheader("🌎 Auditorías por Región")
 
         # Filtrar auditorías finalizadas
@@ -539,10 +561,41 @@ if archivo:
 
         # Mostrar la etiqueta con el total de auditorías finalizadas
         st.markdown(f"""
-            <div style="background-color: #f0f0f5; padding: 10px 20px; border-radius: 5px; font-size: 18px; font-weight: bold; color: #333;">
+            <div style="background-color: #f0f0f5; padding: 15px 25px; border-radius: 8px; font-size: 24px; font-weight: bold; color: #333;">
                 <span style="color: #007bff;">Total de Auditorías Finalizadas: </span><span style="color: #28a745;">{total_auditorias_finalizadas}</span>
             </div>
         """, unsafe_allow_html=True)
+
+
+        st.subheader("📋 Ranking de Auditores por información completa")
+
+        # Filtrar solo auditorías finalizadas
+        data_finalizadas = data[data["Estado de Auditoria"].str.lower() == "finalizada"]
+
+        # Calcular el porcentaje de campos llenos por cada auditoría
+        total_columnas = data_finalizadas.shape[1]
+        data_finalizadas["% Completitud"] = data_finalizadas.notna().sum(axis=1) / total_columnas * 100
+
+        # Agrupar por auditor y calcular el promedio
+        ranking_completitud = data_finalizadas.groupby("Información del Auditor")["% Completitud"].mean().reset_index()
+        ranking_completitud = ranking_completitud.sort_values(by="% Completitud", ascending=False)
+
+        # Formatear porcentaje con coma y símbolo %, y aplicar color azul
+        def formato_porcentaje(valor):
+            return f"{valor:,.1f}%".replace('.', ',')  # Cambia . por , y añade %
+
+        def estilo_azul(val):
+            return 'color: blue; font-weight: bold;' if isinstance(val, float) else ''
+
+        # Mostrar tabla con estilo
+        st.dataframe(
+            ranking_completitud.style
+            .format({"% Completitud": formato_porcentaje})
+            .applymap(estilo_azul, subset=["% Completitud"]),
+            use_container_width=True
+        )
+
+
 
 
 else:
