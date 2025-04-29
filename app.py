@@ -2,8 +2,18 @@ import streamlit as st
 import pandas as pd
 import io
 import seaborn as sns
-import plotly.express as px  # 
-from kpi import process_data
+import plotly.express as px  
+from pt import process_data
+import unicodedata
+
+
+
+# Función para normalizar los nombres (eliminar acentos y tildes)
+def normalizar_texto(texto):
+    if isinstance(texto, str):
+        # Eliminar acentos y tildes
+        return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+    return texto
 
 # Configuración inicial de la app
 st.set_page_config(page_title="Auditorías Técnicos", layout="wide")
@@ -21,14 +31,12 @@ if archivo:
     hojas = xls.sheet_names
     data = pd.concat([xls.parse(hoja).astype(str) for hoja in hojas], ignore_index=True)
 
-    
-
     # Normalizar columnas
     data.columns = data.columns.str.strip()
 
     with tab1:
         # Opciones de filtro
-        tecnicos = sorted(data["Nombre de Técnico/Copiar el del Wfm"].dropna().astype(str).unique())
+        tecnicos = sorted(data["Nombre de Técnico/Copiar el del Wfm"].dropna().apply(normalizar_texto).unique())
         tecnico = st.selectbox("👷‍♂️ Técnico", ["Todos"] + tecnicos)
 
         empresas = sorted(data["Empresa"].dropna().astype(str).unique())
@@ -45,7 +53,7 @@ if archivo:
         df_filtrado = data.copy()
 
         if tecnico != "Todos":
-            df_filtrado = df_filtrado[df_filtrado["Nombre de Técnico/Copiar el del Wfm"].astype(str) == tecnico]
+            df_filtrado = df_filtrado[df_filtrado["Nombre de Técnico/Copiar el del Wfm"].apply(normalizar_texto) == normalizar_texto(tecnico)]
         if empresa != "Todas":
             df_filtrado = df_filtrado[df_filtrado["Empresa"].astype(str) == empresa]
         if tipo != "Todas":
@@ -60,37 +68,112 @@ if archivo:
 
         # ----------------- Ranking Técnicos más Auditados -----------------
         st.markdown("### 🏆 Ranking Técnicos más Auditados")
-        if 'Nombre de Técnico/Copiar el del Wfm' in data.columns and 'Empresa' in data.columns and 'Fecha' in data.columns:
-            # Agrupar por Técnico y Empresa, y contar auditorías
-            ranking = (
-                data.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])
-                .size()
-                .reset_index(name="Cantidad de Auditorías")
-                .rename(columns={"Nombre de Técnico/Copiar el del Wfm": "Técnico"})
-                .sort_values(by="Cantidad de Auditorías", ascending=False)
+
+        # Verificamos que existan las columnas necesarias
+        columnas_necesarias = ['Nombre de Técnico/Copiar el del Wfm', 'Empresa', 'Fecha', 'Estado de Auditoria']
+
+        if all(col in data.columns for col in columnas_necesarias):
+            
+            # 1. Filtramos solo las auditorías FINALIZADAS
+            data['Estado de Auditoria'] = data['Estado de Auditoria'].str.strip().str.lower()
+            data_finalizadas = data[data['Estado de Auditoria'] == 'finalizada'].copy()
+
+            # Aseguramos que 'Fecha' esté en formato datetime
+            data_finalizadas['Fecha'] = pd.to_datetime(data_finalizadas['Fecha'], errors='coerce')
+
+            # Selección de rango de fechas
+            fecha_min = data_finalizadas['Fecha'].min()
+            fecha_max = data_finalizadas['Fecha'].max()
+
+            # Mostramos el selector de fechas, pero no lo hacemos obligatorio
+            fechas = st.date_input(
+                "📅 Selecciona el rango de fechas (opcional)",
+                value=[fecha_min, fecha_max],
+                min_value=fecha_min,
+                max_value=fecha_max
             )
 
-            # Agregar la columna de Fechas de Auditoría
-            ranking["Fechas de Auditoría"] = (
-                data.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])["Fecha"]
-                .apply(lambda x: ', '.join(pd.to_datetime(x).dt.strftime('%d/%m/%Y')))
-                .reset_index(name="Fechas de Auditoría")["Fechas de Auditoría"]
-            )
+            # Si se seleccionaron fechas, filtramos por el rango
+            if isinstance(fechas, list) and len(fechas) == 2:
+                fecha_inicio, fecha_fin = fechas
+                # Filtro por rango de fecha
+                mask = (data_finalizadas['Fecha'] >= pd.to_datetime(fecha_inicio)) & (data_finalizadas['Fecha'] <= pd.to_datetime(fecha_fin))
+                data_finalizadas = data_finalizadas.loc[mask]
 
-            st.dataframe(ranking, use_container_width=True)
-            # Mostrar el Ranking de Técnicos más Auditados
+            # Si el dataframe no está vacío, mostramos el ranking
+            if not data_finalizadas.empty:
+                # Agrupamos por Técnico y Empresa
+                ranking = (
+                    data_finalizadas
+                    .groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])
+                    .agg(
+                        Cantidad_de_Auditorias=('Fecha', 'count'),
+                        Fecha_de_Auditorias=('Fecha', lambda x: ', '.join(sorted(pd.to_datetime(x).dt.strftime('%d/%m/%Y'))))
+                    )
+                    .reset_index()
+                    .rename(columns={
+                        "Nombre de Técnico/Copiar el del Wfm": "Técnico",
+                        "Empresa": "Empresa",
+                        "Cantidad_de_Auditorias": "Cantidad de Auditorías",
+                        "Fecha_de_Auditorias": "Fechas de Auditoría"
+                    })
+                    .sort_values(by="Cantidad de Auditorías", ascending=False)
+                )
+
+                st.dataframe(ranking, use_container_width=True)
+            else:
+                st.warning("⚠️ No hay auditorías en el rango de fechas seleccionado. Mostrando el ranking con todas las auditorías finalizadas.")
+                # Si no hay auditorías en el rango, mostramos el ranking con todas las auditorías finalizadas sin filtrar
+                st.dataframe(
+                    data_finalizadas.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])
+                    .agg(
+                        Cantidad_de_Auditorias=('Fecha', 'count'),
+                        Fecha_de_Auditorias=('Fecha', lambda x: ', '.join(sorted(pd.to_datetime(x).dt.strftime('%d/%m/%Y'))))
+                    )
+                    .reset_index()
+                    .rename(columns={
+                        "Nombre de Técnico/Copiar el del Wfm": "Técnico",
+                        "Empresa": "Empresa",
+                        "Cantidad_de_Auditorias": "Cantidad de Auditorías",
+                        "Fecha_de_Auditorias": "Fechas de Auditoría"
+                    })
+                    .sort_values(by="Cantidad de Auditorías", ascending=False),
+                    use_container_width=True
+                )
         else:
-            st.error("Faltan columnas necesarias para calcular el Ranking de Técnicos más Auditados ('Nombre de Técnico/Copiar el del Wfm', 'Empresa' y 'Fecha').")
+            st.error("Faltan columnas necesarias para calcular el Ranking de Técnicos más Auditados ('Nombre de Técnico/Copiar el del Wfm', 'Empresa', 'Fecha' y 'Estado de Auditoria').")
+
+
 
         # ----------------- KPI Auditorías por Empresa -----------------
+            st.markdown("### 🏢 Auditorías por Empresa")
+
+                # ----------------- KPI Auditorías por Empresa -----------------
         st.markdown("### 🏢 Auditorías por Empresa")
-        auditorias_empresa = (
-            data["Empresa"]
-            .value_counts()
-            .rename_axis('Empresa')
-            .reset_index(name='Cantidad de Auditorías')
-        )
-        st.dataframe(auditorias_empresa, use_container_width=True)
+
+        columnas_necesarias_empresa = ["Empresa", "Estado de Auditoria"]
+
+        if all(col in data.columns for col in columnas_necesarias_empresa):
+            # Normalizamos la columna Estado de Auditoria
+            data['Estado de Auditoria'] = data['Estado de Auditoria'].str.strip().str.lower()
+
+            # Filtramos solo las auditorías finalizadas
+            data_finalizadas_empresa = data[data['Estado de Auditoria'] == 'finalizada'].copy()
+
+            if not data_finalizadas_empresa.empty:
+                auditorias_empresa = (
+                    data_finalizadas_empresa["Empresa"]
+                    .value_counts()
+                    .rename_axis('Empresa')
+                    .reset_index(name='Cantidad de Auditorías')
+                )
+
+                st.dataframe(auditorias_empresa, use_container_width=True)
+            else:
+                st.warning("⚠️ No hay auditorías finalizadas para mostrar auditorías por empresa.")
+        else:
+            st.error("⚠️ Faltan columnas necesarias para calcular auditorías por empresa ('Empresa' y 'Estado de Auditoria').")
+
 
         # Gráfico de barras interactivo con Plotly
         st.subheader("📈 Auditorías por Empresa")
@@ -114,6 +197,9 @@ if archivo:
         st.plotly_chart(fig, use_container_width=True)
 
 
+                # ----------------- KPI Stock Crítico de Herramientas -----------------
+                # ----------------- KPI Stock Crítico de Herramientas -----------------
+        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].apply(normalizar_texto)        
         st.markdown("### 🔧 Técnicos con Stock Crítico de Herramientas (con detalle de herramientas faltantes)")
 
         herramientas_criticas = [
@@ -131,19 +217,34 @@ if archivo:
                     faltantes.append(herramienta)
             return faltantes
 
-        stock_critico_herramientas = (
-            data.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])[herramientas_criticas]
-            .apply(lambda x: obtener_herramientas_faltantes(x.iloc[0]))
-            .reset_index()
-            .rename(columns={0: "Herramientas Faltantes", "Nombre de Técnico/Copiar el del Wfm": "Técnico"})
-        )
+        # Asegurarse que Fecha es de tipo datetime
+        data['Fecha'] = pd.to_datetime(data['Fecha'], dayfirst=True, errors='coerce')  # Asegúrate de que está en formato de fecha correcto
 
+        # Limpiar posibles espacios y caracteres invisibles en los nombres de técnicos
+        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].str.strip()
+
+        # Filtrar solo auditorías finalizadas
+        data_filtrada = data[data['Estado de Auditoria'].str.strip().str.lower() == 'finalizada'].copy()
+
+        # Para cada técnico, buscar la última fecha de auditoría finalizada
+        idx = data_filtrada.groupby('Nombre de Técnico/Copiar el del Wfm')['Fecha'].idxmax()
+        data_ultima_auditoria = data_filtrada.loc[idx].reset_index(drop=True)
+
+        # Procesamos stock crítico
+        stock_critico_herramientas = data_ultima_auditoria[["Nombre de Técnico/Copiar el del Wfm", "Empresa", "Fecha"] + herramientas_criticas].copy()
+        stock_critico_herramientas["Herramientas Faltantes"] = stock_critico_herramientas.apply(obtener_herramientas_faltantes, axis=1)
         stock_critico_herramientas = stock_critico_herramientas[stock_critico_herramientas["Herramientas Faltantes"].map(len) > 0]
 
+        # Conteo
         stock_critico_herramientas["Cantidad Faltantes"] = stock_critico_herramientas["Herramientas Faltantes"].map(len)
 
+        # Orden
         stock_critico_herramientas = stock_critico_herramientas.sort_values(by="Cantidad Faltantes", ascending=False)
 
+        # Renombramos
+        stock_critico_herramientas = stock_critico_herramientas.rename(columns={"Nombre de Técnico/Copiar el del Wfm": "Técnico"})
+
+        # Agregar icono
         def agregar_icono_herramientas(row):
             if row["Cantidad Faltantes"] >= 2:
                 return f"🔴 {row['Técnico']}"
@@ -156,7 +257,7 @@ if archivo:
 
         stock_critico_herramientas["Herramientas Faltantes"] = stock_critico_herramientas["Herramientas Faltantes"].apply(lambda x: ", ".join(x))
 
-        # KPI Herramientas
+        # KPI
         total_tecnicos_stock_critico_herramientas = stock_critico_herramientas.shape[0]
         st.markdown(f"**🔥 Total técnicos con stock crítico de herramientas: {total_tecnicos_stock_critico_herramientas}**")
 
@@ -169,14 +270,16 @@ if archivo:
         if empresa_seleccionada_herramientas != "Todas":
             stock_critico_herramientas = stock_critico_herramientas[stock_critico_herramientas["Empresa"] == empresa_seleccionada_herramientas]
 
+        # Mostrar dataframe
         st.dataframe(
-            stock_critico_herramientas[["Técnico Con Icono", "Empresa", "Herramientas Faltantes"]],
+            stock_critico_herramientas[["Técnico Con Icono", "Empresa", "Fecha", "Herramientas Faltantes"]],
             use_container_width=True
         )
 
+        # Botón descargar
         buffer_herramientas = io.BytesIO()
         with pd.ExcelWriter(buffer_herramientas, engine='xlsxwriter') as writer:
-            stock_critico_herramientas[["Técnico Con Icono", "Empresa", "Herramientas Faltantes"]].rename(columns={"Técnico Con Icono": "Técnico"}).to_excel(writer, index=False, sheet_name='Stock_Critico_Herramientas')
+            stock_critico_herramientas[["Técnico Con Icono", "Empresa", "Fecha", "Herramientas Faltantes"]].rename(columns={"Técnico Con Icono": "Técnico"}).to_excel(writer, index=False, sheet_name='Stock_Critico_Herramientas')
         buffer_herramientas.seek(0)
 
         st.download_button(
@@ -185,7 +288,7 @@ if archivo:
             file_name="tecnicos_stock_critico_herramientas.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
+        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].apply(normalizar_texto)
         st.subheader("📈 Técnicos con Stock Crítico de Herramientas por Empresa")
 
         empresas_stock_critico_herramientas = (
@@ -194,6 +297,10 @@ if archivo:
             .reset_index(name='Cantidad de Técnicos con Stock Crítico Herramientas')
             .sort_values(by='Cantidad de Técnicos con Stock Crítico Herramientas', ascending=False)
         )
+
+        st.dataframe(empresas_stock_critico_herramientas, use_container_width=True)
+
+               
 
         fig_stock_herramientas = px.bar(
             empresas_stock_critico_herramientas,
@@ -217,6 +324,8 @@ if archivo:
         
         # --- STOCK CRÍTICO EPP ---
 
+        # ----------------- KPI Stock Crítico de EPP -----------------
+        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].apply(normalizar_texto)
         st.markdown("### 🦺 Técnicos con Stock Crítico de EPP (con detalle de elementos faltantes)")
 
         # Lista de EPP críticos a considerar
@@ -240,25 +349,35 @@ if archivo:
                     faltantes.append(epp)
             return faltantes
 
-        # Crear tabla de técnicos con EPP faltantes
-        stock_critico_epp = (
-            data.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])[epp_criticos]
-            .apply(lambda x: obtener_epp_faltantes(x.iloc[0]))
-            .reset_index()
-            .rename(columns={0: "EPP Faltantes", "Nombre de Técnico/Copiar el del Wfm": "Técnico"})
-        )
+        # Asegurarse que Fecha es tipo datetime
+        data['Fecha'] = pd.to_datetime(data['Fecha'], dayfirst=True, errors='coerce')
 
-        # Filtrar solo técnicos con EPP faltantes
+        # Limpiar posibles espacios en nombres de técnicos
+        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].str.strip()
+
+        # Filtrar solo auditorías finalizadas
+        data_filtrada_epp = data[data['Estado de Auditoria'].str.strip().str.lower() == 'finalizada'].copy()
+
+        # Para cada técnico, tomar la última fecha de auditoría finalizada
+        idx_epp = data_filtrada_epp.groupby('Nombre de Técnico/Copiar el del Wfm')['Fecha'].idxmax()
+        data_ultima_auditoria_epp = data_filtrada_epp.loc[idx_epp].reset_index(drop=True)
+
+        # Procesar stock crítico EPP
+        stock_critico_epp = data_ultima_auditoria_epp[["Nombre de Técnico/Copiar el del Wfm", "Empresa", "Fecha"] + epp_criticos].copy()
+        stock_critico_epp["EPP Faltantes"] = stock_critico_epp.apply(obtener_epp_faltantes, axis=1)
         stock_critico_epp = stock_critico_epp[stock_critico_epp["EPP Faltantes"].map(len) > 0]
 
         # Contar cantidad de faltantes
         stock_critico_epp["Cantidad Faltantes"] = stock_critico_epp["EPP Faltantes"].map(len)
 
-        # Ordenar de más a menos faltantes
+        # Ordenar de más a menos
         stock_critico_epp = stock_critico_epp.sort_values(by="Cantidad Faltantes", ascending=False)
 
+        # Renombrar técnico
+        stock_critico_epp = stock_critico_epp.rename(columns={"Nombre de Técnico/Copiar el del Wfm": "Técnico"})
+
         # Agregar el circulito 🔴🟡
-        def agregar_icono(row):
+        def agregar_icono_epp(row):
             faltantes_vitales = [epp for epp in row["EPP Faltantes"] if epp in epp_vitales]
             if len(faltantes_vitales) >= 2:
                 return f"🔴 {row['Técnico']}"
@@ -267,35 +386,34 @@ if archivo:
             else:
                 return row['Técnico']
 
-        stock_critico_epp["Técnico Con Icono"] = stock_critico_epp.apply(agregar_icono, axis=1)
+        stock_critico_epp["Técnico Con Icono"] = stock_critico_epp.apply(agregar_icono_epp, axis=1)
 
-        # Convertir EPP faltantes a texto
+        # Convertir lista de EPP a texto
         stock_critico_epp["EPP Faltantes"] = stock_critico_epp["EPP Faltantes"].apply(lambda x: ", ".join(x))
 
-        # Guardar copia general para gráficos
-        stock_critico_epp_general = stock_critico_epp.copy()
+        # KPI Total técnicos
+        total_tecnicos_stock_critico_epp = stock_critico_epp.shape[0]
+        st.markdown(f"**🔥 Total técnicos con stock crítico de EPP: {total_tecnicos_stock_critico_epp}**")
 
         # Filtro por empresa
         empresas_disponibles_epp = stock_critico_epp['Empresa'].unique()
         empresa_seleccionada_epp = st.selectbox("🔎 Filtrar por Empresa (EPP):", options=["Todas"] + list(empresas_disponibles_epp))
 
+        stock_critico_epp_general = stock_critico_epp.copy()
+
         if empresa_seleccionada_epp != "Todas":
             stock_critico_epp = stock_critico_epp[stock_critico_epp["Empresa"] == empresa_seleccionada_epp]
 
-        # --- KPI EPP ---
-        total_tecnicos_stock_critico_epp = stock_critico_epp_general.shape[0]
-        st.markdown(f"**🔥 Total técnicos con stock crítico de EPP: {total_tecnicos_stock_critico_epp}**")
-
-        # Mostrar tabla
+        # Mostrar dataframe
         st.dataframe(
-            stock_critico_epp[["Técnico Con Icono", "Empresa", "EPP Faltantes"]],
+            stock_critico_epp[["Técnico Con Icono", "Empresa", "Fecha", "EPP Faltantes"]],
             use_container_width=True
         )
 
-        # Botón de descarga
+        # Botón descargar
         buffer_epp = io.BytesIO()
         with pd.ExcelWriter(buffer_epp, engine='xlsxwriter') as writer:
-            stock_critico_epp[["Técnico Con Icono", "Empresa", "EPP Faltantes"]].rename(columns={"Técnico Con Icono": "Técnico"}).to_excel(writer, index=False, sheet_name='Stock_Critico_EPP')
+            stock_critico_epp[["Técnico Con Icono", "Empresa", "Fecha", "EPP Faltantes"]].rename(columns={"Técnico Con Icono": "Técnico"}).to_excel(writer, index=False, sheet_name='Stock_Critico_EPP')
         buffer_epp.seek(0)
 
         st.download_button(
@@ -341,28 +459,36 @@ if archivo:
         st.metric(label="🔥 Total Técnicos con EPP Crítico", value=total_tecnicos_stock_critico_epp)
         st.metric(label="🚀 Total Técnicos con Herramientas Críticas", value=total_tecnicos_stock_critico_herramientas)
 
+        
+
         if archivo:
             # Llamamos a la función de KPIs
-            kpis, empresa_kpis_df, total_auditorias, data = process_data(archivo)
-        
+            kpis, empresa_kpis_df, total_auditorias, data = process_data(archivo)   
 
     with tab2:
 
-        # ----------------- 🎯 Dashboard de Cumplimiento -----------------
-            # Ranking de auditores por trabajos realizados
+        # # ----------------- 🎯 Dashboard de Cumplimiento -----------------
+        # Ranking de auditores por trabajos realizados
         st.markdown("### Ranking de Auditores por Trabajos Realizados")
+
+        # Filtrar auditorías finalizadas
+        data_finalizadas = data[data['Estado de Auditoria'] == 'finalizada']
+
+        # Agrupar por auditor y contar las auditorías finalizadas
         ranking_auditores = (
-            data.groupby("Información del Auditor")
-            .size()
-            .reset_index(name="Cantidad de Auditorías")
-            .rename(columns={"Información del Auditor": "Auditor"})
-            .sort_values(by="Cantidad de Auditorías", ascending=False)
+            data_finalizadas.groupby("Información del Auditor")  # Agrupar por Auditor
+            .size()  # Contar las auditorías
+            .reset_index(name="Cantidad de Auditorías")  # Resetear el índice y renombrar la columna
+            .rename(columns={"Información del Auditor": "Auditor"})  # Renombrar la columna
+            .sort_values(by="Cantidad de Auditorías", ascending=False)  # Ordenar por cantidad de auditorías
         )
+
         st.dataframe(ranking_auditores, use_container_width=True)
 
+        # Verificar si las columnas necesarias existen para el KPI de distribución de auditorías
         if 'Información del Auditor' in data.columns and 'Empresa' in data.columns and 'Fecha' in data.columns:
-            # Agrupar por auditor y empresa y concatenar las fechas de las auditorías
-            distribucion_auditorias = data.groupby(['Información del Auditor', 'Empresa']).agg(
+            # Agrupar por auditor y empresa y concatenar las fechas de las auditorías (solo las finalizadas)
+            distribucion_auditorias = data_finalizadas.groupby(['Información del Auditor', 'Empresa']).agg(
                 Cantidad_de_Auditorias=('Fecha', 'size'),
                 Fechas_de_Auditoria=('Fecha', lambda x: ', '.join(pd.to_datetime(x).dt.strftime('%d/%m/%Y')))
             ).reset_index()
@@ -374,38 +500,53 @@ if archivo:
             st.error("Faltan columnas necesarias para calcular el KPI de distribución de auditorías ('Información del Auditor', 'Empresa' y 'Fecha').")
 
             # ----------------- KPI: Auditorías por Región -----------------
+            # ----------------- KPI: Auditorías por Región -----------------
         st.subheader("🌎 Auditorías por Región")
 
-            # Agrupar datos por Región y contar cantidad de auditorías
-        auditorias_por_region = (
-                data.groupby('Region')
-                .size()
-                .reset_index(name='Cantidad de Auditorías')
-                .sort_values(by='Cantidad de Auditorías', ascending=False)
-            )
+        # Filtrar auditorías finalizadas
+        data_finalizadas = data[data['Estado de Auditoria'] == 'finalizada']
 
-            # Crear gráfico de barras horizontal
+        # Agrupar datos por Región y contar cantidad de auditorías finalizadas
+        auditorias_por_region = (
+            data_finalizadas.groupby('Region')  # Agrupar por Región
+            .size()  # Contar las auditorías
+            .reset_index(name='Cantidad de Auditorías')  # Resetear el índice y renombrar la columna
+            .sort_values(by='Cantidad de Auditorías', ascending=False)  # Ordenar por cantidad de auditorías
+        )
+
+        # Crear gráfico de barras horizontal
         fig_auditorias_region = px.bar(
-                auditorias_por_region,
-                x='Cantidad de Auditorías',
-                y='Region',
-                orientation='h',
-                color='Region',
-                text='Cantidad de Auditorías',
-                color_discrete_sequence=px.colors.qualitative.Set2
-            )
+            auditorias_por_region,
+            x='Cantidad de Auditorías',
+            y='Region',
+            orientation='h',
+            color='Region',
+            text='Cantidad de Auditorías',
+            color_discrete_sequence=px.colors.qualitative.Set2
+        )
 
         fig_auditorias_region.update_layout(
-                xaxis_title="Cantidad de Auditorías",
-                yaxis_title="Región",
-                yaxis=dict(autorange="reversed"),
-                plot_bgcolor='white'
-            )
+            xaxis_title="Cantidad de Auditorías",
+            yaxis_title="Región",
+            yaxis=dict(autorange="reversed"),
+            plot_bgcolor='white'
+        )
 
         st.plotly_chart(fig_auditorias_region, use_container_width=True)
+
+        # Calcular el total de auditorías finalizadas
+        total_auditorias_finalizadas = len(data[data['Estado de Auditoria'] == 'finalizada'])
+
+        # Mostrar la etiqueta con el total de auditorías finalizadas
+        st.markdown(f"""
+            <div style="background-color: #f0f0f5; padding: 10px 20px; border-radius: 5px; font-size: 18px; font-weight: bold; color: #333;">
+                <span style="color: #007bff;">Total de Auditorías Finalizadas: </span><span style="color: #28a745;">{total_auditorias_finalizadas}</span>
+            </div>
+        """, unsafe_allow_html=True)
 
 
 else:
     st.warning("⚠️ Por favor, sube un archivo Excel con las auditorías.")
+
 
 
