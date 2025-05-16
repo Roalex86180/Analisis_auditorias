@@ -1,605 +1,892 @@
-import streamlit as st
 import pandas as pd
-import io
-import seaborn as sns
-import plotly.express as px  
-from pt import process_data
+import streamlit as st
+import plotly.express as px
 import unicodedata
+import io
+from datetime import date
+import traceback # Opcional: para debug de errores detallados
+# Asegúrate de que xlsxwriter esté instalado: pip install xlsxwriter openpyxl
+from pt import process_data
 
 
-# Función para normalizar los nombres (eliminar acentos y tildes)
+# --- Función de Normalización ---
 def normalizar_texto(texto):
+    """Normaliza texto: elimina espacios, acentos, tildes y convierte a minúsculas."""
     if isinstance(texto, str):
-        # Eliminar acentos y tildes
-        return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
-    return texto
+        texto = str(texto).strip().lower() # Convertir explícitamente a string por seguridad
+        nfd_form = unicodedata.normalize('NFD', texto)
+        return ''.join(c for c in nfd_form if unicodedata.category(c) != 'Mn')
+    # Maneja casos donde el input no sea string, como NaN o None
+    return '' # Devuelve string vacío si no es string para evitar errores en operaciones de string
 
-# Configuración inicial de la app
-st.set_page_config(page_title="Auditorías Técnicos", layout="wide")
 
-st.title("📋 Análisis de Auditorías de Técnicos de Telecomunicaciones")
+# --- Configuración inicial de la app ---
+st.set_page_config(page_title="Análisis Auditorías", layout="wide")
+st.title("📊 Análisis de Auditorías de Técnicos")
 
-# Subir archivo
-archivo = st.file_uploader("📁 Sube el archivo Excel con los datos de auditoría", type=["xlsx"])
+# --- Carga de Datos con st.file_uploader y st.session_state ---
+st.subheader("📁 Carga de Datos de Auditoría")
+# Añadimos una key para que Streamlit gestione correctamente el estado del uploader
+archivo = st.file_uploader("Sube el archivo Excel con los datos de auditoría", type=["xlsx"], key="excel_uploader")
 
-tab1, tab2, = st.tabs(["📋 Información de Técnicos", "🛠️ Información de Auditores",])
+# --- Lógica de Carga y Preprocesamiento del Archivo ---
+# Solo cargamos y procesamos el archivo si se ha subido uno Y es diferente al que ya tenemos en session_state
+if archivo is not None:
+    # --- CORRECCIÓN AQUÍ: Usamos name y size para comparar si es un nuevo archivo ---
+    # Verificamos si NO hay datos cargados, O si el nombre/tamaño del archivo subido
+    # son diferentes a los que guardamos en session_state del archivo anterior.
+    if 'data' not in st.session_state or \
+       st.session_state.get('uploaded_file_name') != archivo.name or \
+       st.session_state.get('uploaded_file_size') != archivo.size:
 
-if archivo:
-    # Cargar todas las hojas del archivo Excel
-    xls = pd.ExcelFile(archivo)
-    hojas = xls.sheet_names
-    data = pd.concat([xls.parse(hoja).astype(str) for hoja in hojas], ignore_index=True)
+        st.info(f"Cargando y procesando archivo '{archivo.name}'...")
+        try:
+            # Leer el archivo Excel
+            xls = pd.ExcelFile(archivo)
+            hojas = xls.sheet_names
+            # Cargar cada hoja y concatenar, permitiendo a pandas inferir tipos
+            df_list = []
+            for hoja in hojas:
+                try:
+                    df_list.append(xls.parse(hoja))
+                except Exception as e:
+                     st.warning(f"No se pudo leer la hoja '{hoja}': {e}")
+                     continue # Saltar a la siguiente hoja si falla
 
-    # Normalizar columnas
-    data.columns = data.columns.str.strip()
-
-            # Definir una función para generar contexto compacto
-    def generar_contexto(data):
-            return f"""
-        Estás analizando una base de datos con {data.shape[0]} registros de auditorías técnicas a técnicos de telecomunicaciones.
-        Cada registro contiene:
-        - Información del técnico, auditor, empresa y fecha.
-        - Lista de herramientas y materiales verificados.
-        - Observaciones y cumplimiento de estándares.
-        - Elementos de protección personal (EPP) y condiciones del vehículo.
-        Tu tarea es responder preguntas con base en los datos cargados.
-        """
-
-        # Consultar a Ollama con contexto y pregunta del usuario
-    def consultar_ollama(contexto, pregunta):
-            response = ollama.chat(
-                model='mistral',
-                messages=[
-                    {"role": "system", "content": contexto},
-                    {"role": "user", "content": pregunta}
-                ]
-            )
-            return response['message']['content']
-
-    with tab1:
-        # Opciones de filtro
-        tecnicos = sorted(data["Nombre de Técnico/Copiar el del Wfm"].dropna().apply(normalizar_texto).unique())
-        tecnico = st.selectbox("👷‍♂️ Técnico", ["Todos"] + tecnicos)
-
-        empresas = sorted(data["Empresa"].dropna().astype(str).unique())
-        empresa = st.selectbox("🏢 Empresa", ["Todas"] + empresas)
-
-        tipo_auditoria = sorted(data["Tipo de Auditoria"].dropna().astype(str).unique())
-        tipo = st.selectbox("🔍 Tipo de Auditoría", ["Todas"] + tipo_auditoria)
-
-        patente = st.text_input("🚗 Buscar por Patente").strip()
-
-        orden_trabajo = st.text_input("📄 Buscar por Número de Orden de Trabajo / ID Externo").strip()
-
-        # Filtros
-        df_filtrado = data.copy()
-
-        if tecnico != "Todos":
-            df_filtrado = df_filtrado[df_filtrado["Nombre de Técnico/Copiar el del Wfm"].apply(normalizar_texto) == normalizar_texto(tecnico)]
-        if empresa != "Todas":
-            df_filtrado = df_filtrado[df_filtrado["Empresa"].astype(str) == empresa]
-        if tipo != "Todas":
-            df_filtrado = df_filtrado[df_filtrado["Tipo de Auditoria"].astype(str) == tipo]
-        if patente:
-            df_filtrado = df_filtrado[df_filtrado["Patente Camioneta"].astype(str).str.contains(patente, case=False)]
-        if orden_trabajo:
-            df_filtrado = df_filtrado[df_filtrado["Número de Orden de Trabajo/ ID externo"].astype(str).str.contains(orden_trabajo, case=False)]
-
-        st.markdown("### 📊 Datos filtrados")
-        st.dataframe(df_filtrado, use_container_width=True)
-
-        # ----------------- Ranking Técnicos más Auditados -----------------
-        st.markdown("### 🏆 Ranking Técnicos más Auditados")
-
-        # Verificamos que existan las columnas necesarias
-        columnas_necesarias = ['Nombre de Técnico/Copiar el del Wfm', 'Empresa', 'Fecha', 'Estado de Auditoria']
-
-        if all(col in data.columns for col in columnas_necesarias):
-            
-            # 1. Filtramos solo las auditorías FINALIZADAS
-            data['Estado de Auditoria'] = data['Estado de Auditoria'].str.strip().str.lower()
-            data_finalizadas = data[data['Estado de Auditoria'] == 'finalizada'].copy()
-
-            # Aseguramos que 'Fecha' esté en formato datetime
-            data_finalizadas['Fecha'] = pd.to_datetime(data_finalizadas['Fecha'], errors='coerce')
-
-            # Selección de rango de fechas
-            fecha_min = data_finalizadas['Fecha'].min()
-            fecha_max = data_finalizadas['Fecha'].max()
-
-            # Mostramos el selector de fechas, pero no lo hacemos obligatorio
-            fechas = st.date_input(
-                "📅 Selecciona el rango de fechas (opcional)",
-                value=[fecha_min, fecha_max],
-                min_value=fecha_min,
-                max_value=fecha_max
-            )
-
-            # Si se seleccionaron fechas, filtramos por el rango
-            if isinstance(fechas, list) and len(fechas) == 2:
-                fecha_inicio, fecha_fin = fechas
-                # Filtro por rango de fecha
-                mask = (data_finalizadas['Fecha'] >= pd.to_datetime(fecha_inicio)) & (data_finalizadas['Fecha'] <= pd.to_datetime(fecha_fin))
-                data_finalizadas = data_finalizadas.loc[mask]
-
-            # Si el dataframe no está vacío, mostramos el ranking
-            if not data_finalizadas.empty:
-                # Agrupamos por Técnico y Empresa
-                ranking = (
-                    data_finalizadas
-                    .groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])
-                    .agg(
-                        Cantidad_de_Auditorias=('Fecha', 'count'),
-                        Fecha_de_Auditorias=('Fecha', lambda x: ', '.join(sorted(pd.to_datetime(x).dt.strftime('%d/%m/%Y'))))
-                    )
-                    .reset_index()
-                    .rename(columns={
-                        "Nombre de Técnico/Copiar el del Wfm": "Técnico",
-                        "Empresa": "Empresa",
-                        "Cantidad_de_Auditorias": "Cantidad de Auditorías",
-                        "Fecha_de_Auditorias": "Fechas de Auditoría"
-                    })
-                    .sort_values(by="Cantidad de Auditorías", ascending=False)
-                )
-
-                st.dataframe(ranking, use_container_width=True)
+            if df_list:
+                 data = pd.concat(df_list, ignore_index=True)
+                 
             else:
-                st.warning("⚠️ No hay auditorías en el rango de fechas seleccionado. Mostrando el ranking con todas las auditorías finalizadas.")
-                # Si no hay auditorías en el rango, mostramos el ranking con todas las auditorías finalizadas sin filtrar
-                st.dataframe(
-                    data_finalizadas.groupby(["Nombre de Técnico/Copiar el del Wfm", "Empresa"])
-                    .agg(
-                        Cantidad_de_Auditorias=('Fecha', 'count'),
-                        Fecha_de_Auditorias=('Fecha', lambda x: ', '.join(sorted(pd.to_datetime(x).dt.strftime('%d/%m/%Y'))))
-                    )
-                    .reset_index()
-                    .rename(columns={
-                        "Nombre de Técnico/Copiar el del Wfm": "Técnico",
-                        "Empresa": "Empresa",
-                        "Cantidad_de_Auditorias": "Cantidad de Auditorías",
-                        "Fecha_de_Auditorias": "Fechas de Auditoría"
-                    })
-                    .sort_values(by="Cantidad de Auditorías", ascending=False),
-                    use_container_width=True
-                )
+                 st.error("No se pudo cargar ninguna hoja del archivo Excel.")
+                 data = pd.DataFrame() # Crear DataFrame vacío si no se cargó nada
+
+
+            # --- Preparación General de Datos (Aplicar una sola vez al cargar) ---
+            if not data.empty:
+                # Normalizar nombres de columnas (Esto ya lo tenías)
+                data.columns = data.columns.str.strip()
+
+                # Normalizar columnas clave que se usarán en varios análisis
+                cols_to_normalize_str = ['Nombre de Técnico/Copiar el del Wfm', 'Información del Auditor']
+                for col in cols_to_normalize_str:
+                    if col in data.columns:
+                         # Rellenar posibles NaN antes de aplicar la normalización
+                         # La función normalizar_texto ahora maneja no-strings y devuelve ''
+                         data[col] = data[col].apply(normalizar_texto)
+                    else:
+                        # Añadir la columna si falta para evitar KeyErrors posteriores
+                         data[col] = ''
+
+
+                # Normalizar y limpiar estado de auditoría
+                if 'Estado de Auditoria' in data.columns:
+                    data['Estado de Auditoria'] = data['Estado de Auditoria'].astype(str).str.strip().str.lower()
+                    data['Estado de Auditoria'] = data['Estado de Auditoria'].replace({'nan': 'desconocido', '': 'desconocido'})
+                else:
+                    data['Estado de Auditoria'] = 'desconocido' # Añadir si falta
+
+                # Convertir la columna de fecha a datetime
+                if 'Fecha' in data.columns:
+                    data['Fecha'] = pd.to_datetime(data['Fecha'], errors='coerce') # NaT si falla
+                # Notas: filas con Fecha=NaT o columnas no encontradas se manejarán en cada análisis que use fechas.
+                    
+                col_km = 'Kilometraje Camioneta'
+                if col_km in data.columns:
+                    # Intenta convertir la columna a tipo numérico.
+                    # errors='coerce' convierte valores no válidos a NaN.
+                    data[col_km] = pd.to_numeric(data[col_km], errors='coerce')
+                    # Opcional: Si prefieres NaN a 0, comenta la línea de fillna(0)
+                    # data[col_km] = data[col_km].fillna(0) # Si quieres 0 en lugar de NaN
+                else:
+                     # Añadir la columna si falta con valores nulos (para evitar errores)
+                     data[col_km] = pd.NA # O np.nan
+
+                     # --- Manejar la columna Número de Orden de Trabajo/ ID externo ---
+                col_id_trabajo = 'Número de Orden de Trabajo/ ID externo' # Asegurarse de usar la variable definida antes
+                if col_id_trabajo in data.columns:
+                    # Convertir la columna a tipo string explícitamente
+                    data[col_id_trabajo] = data[col_id_trabajo].astype(str)
+                    # Opcional: Si después de convertir a string quedan valores 'nan' (por NaNs originales), puedes reemplazarlos por ''
+                    data[col_id_trabajo] = data[col_id_trabajo].replace('nan', '')
+                else:
+                    # Si la columna falta, añadirla como vacía para evitar KeyErrors posteriores
+                    data[col_id_trabajo] = ''
+
+                    # --- NUEVA CORRECCIÓN: Manejar la columna Rut / tecnico ---
+                col_rut_tecnico = 'Rut / tecnico' # Definir la variable para el nombre de la columna
+                if col_rut_tecnico in data.columns:
+                    # Convertir la columna ENTERA a tipo string
+                    # Esto asegura que todos los valores (números, strings, NaNs) se conviertan a su representación de texto
+                    data[col_rut_tecnico] = data[col_rut_tecnico].astype(str)
+                    # Opcional: Reemplazar la representación de string de NaN ('nan') por una cadena vacía si lo prefieres
+                    data[col_rut_tecnico] = data[col_rut_tecnico].replace('nan', '')
+                else:
+                    # Si la columna 'Rut / tecnico' falta, añadirla como columna de strings vacías
+                    data[col_rut_tecnico] = ''
+
+                # Opcional: Limpiar filas completamente vacías que podrían venir de hojas extra
+                original_rows = len(data)
+                data.dropna(how='all', inplace=True)
+                if len(data) < original_rows:
+                     st.info(f"Se eliminaron {original_rows - len(data)} filas completamente vacías.")
+
+
+                # --- Almacenar el DataFrame procesado y la info del archivo en session_state ---
+                st.session_state['data'] = data
+                st.session_state['uploaded_file_name'] = archivo.name # Guardamos el nombre
+                st.session_state['uploaded_file_size'] = archivo.size # Guardamos el tamaño
+                # Ya NO guardamos archivo.id
+
+                st.success("Archivo cargado y procesado correctamente.")
+
+                # --- Re-ejecutar el script ---
+                # Esto es crucial para que Streamlit actualice la interfaz y use los datos cargados
+                st.rerun()
+
+            else:
+                 # Si data está vacía después de cargar, limpiar session_state
+                 st.warning("⚠️ El archivo Excel cargado está vacío o no contiene datos procesables.")
+                 if 'data' in st.session_state: del st.session_state['data']
+                 if 'uploaded_file_name' in st.session_state: del st.session_state['uploaded_file_name']
+                 if 'uploaded_file_size' in st.session_state: del st.session_state['uploaded_file_size']
+
+
+        except Exception as e:
+            st.error(f"Ocurrió un error al cargar o procesar el archivo: {e}")
+            # Limpiar session_state en caso de error
+            if 'data' in st.session_state: del st.session_state['data']
+            if 'uploaded_file_name' in st.session_state: del st.session_state['uploaded_file_name']
+            if 'uploaded_file_size' in st.session_state: del st.session_state['uploaded_file_size']
+            # Mostrar el traceback completo para depuración si es necesario
+            # st.code(traceback.format_exc())
+
+    else:
+        # Este mensaje se muestra si el mismo archivo ya está cargado y procesado
+        st.info(f"El archivo '{archivo.name}' ya está cargado. Usa los filtros para explorar los datos.")
+
+
+# --- Bloque Principal que se ejecuta SOLO si 'data' está en session_state ---
+# Este bloque contiene todas las pestañas y su contenido
+if 'data' in st.session_state:
+    data = st.session_state['data'] # Recuperar el DataFrame de session_state
+
+    # Verificar si el DataFrame no está vacío después de recuperarlo
+    if not data.empty:
+
+        # --- Realizar filtrados comunes aquí si aplican a ambas pestañas ---
+        # Por ejemplo, filtrar por auditorías finalizadas, ya que se usa en varias secciones
+        if 'Estado de Auditoria' in data.columns:
+             # data['Estado de Auditoria'] ya está normalizada
+             data_finalizadas = data[data['Estado de Auditoria'] == 'finalizada'].copy()
         else:
-            st.error("Faltan columnas necesarias para calcular el Ranking de Técnicos más Auditados ('Nombre de Técnico/Copiar el del Wfm', 'Empresa', 'Fecha' y 'Estado de Auditoria').")
+             # No hay columna de estado, data_finalizadas estará vacía
+             data_finalizadas = pd.DataFrame()
 
 
+        # --- Definición de Pestañas ---
+        tab1, tab2 = st.tabs(["📋 Información de Técnicos", "🛠️ Información de Auditores"])
 
-        # ----------------- KPI Auditorías por Empresa -----------------
-            st.markdown("### 🏢 Auditorías por Empresa")
+        # --- Contenido de la Pestaña 1 ---
+        with tab1:
+            st.header("📋 Información de Técnicos")
 
-                # ----------------- KPI Auditorías por Empresa -----------------
-        st.markdown("### 🏢 Auditorías por Empresa")
+            # --- Filtros de la Pestaña 1 ---
+            st.markdown("### 🔍 Filtros")
+            # Nombres de columnas clave
+            col_tec_nombre = 'Nombre de Técnico/Copiar el del Wfm'
+            col_empresa = 'Empresa'
+            col_tipo_auditoria = 'Tipo de Auditoria'
+            col_patente = 'Patente Camioneta'
+            col_orden_trabajo = 'Número de Orden de Trabajo/ ID externo'
+            col_fecha = 'Fecha' # Necesaria para rango de fechas en ranking
 
-        columnas_necesarias_empresa = ["Empresa", "Estado de Auditoria"]
 
-        if all(col in data.columns for col in columnas_necesarias_empresa):
-            # Normalizamos la columna Estado de Auditoria
-            data['Estado de Auditoria'] = data['Estado de Auditoria'].str.strip().str.lower()
+            # Asegurarse de que las columnas existen antes de usar unique
+            tecnicos = sorted(data[col_tec_nombre].unique().tolist()) if col_tec_nombre in data.columns else []
+            tecnicos = [t for t in tecnicos if t.strip() != '' and t.lower() != 'nan'] # Limpiar vacíos/nan
+            tecnico = st.selectbox("👷‍♂️ Técnico", ["Todos"] + tecnicos, key="filtro_tecnico_tab1") # Añadir key
 
-            # Filtramos solo las auditorías finalizadas
-            data_finalizadas_empresa = data[data['Estado de Auditoria'] == 'finalizada'].copy()
+            empresas = sorted(data[col_empresa].astype(str).unique().tolist()) if col_empresa in data.columns else []
+            empresas = [e for e in empresas if e.strip() != '' and e.lower() != 'nan'] # Limpiar vacíos/nan
+            empresa = st.selectbox("🏢 Empresa", ["Todas"] + empresas, key="filtro_empresa_tab1") # Añadir key
 
-            if not data_finalizadas_empresa.empty:
-                auditorias_empresa = (
-                    data_finalizadas_empresa["Empresa"]
-                    .value_counts()
-                    .rename_axis('Empresa')
-                    .reset_index(name='Cantidad de Auditorías')
-                )
+            tipos_auditoria = sorted(data[col_tipo_auditoria].astype(str).unique().tolist()) if col_tipo_auditoria in data.columns else []
+            tipos_auditoria = [t for t in tipos_auditoria if t.strip() != '' and t.lower() != 'nan'] # Limpiar vacíos/nan
+            tipo = st.selectbox("🔍 Tipo de Auditoría", ["Todas"] + tipos_auditoria, key="filtro_tipo_auditoria_tab1") # Añadir key
 
-                st.dataframe(auditorias_empresa, use_container_width=True)
+            patente = st.text_input("🚗 Buscar por Patente", key="filtro_patente_tab1").strip() if col_patente in data.columns else ""
+            orden_trabajo = st.text_input("📄 Buscar por Número de Orden de Trabajo / ID Externo", key="filtro_orden_trabajo_tab1").strip() if col_orden_trabajo in data.columns else ""
+
+            # Aplicar Filtros
+            df_filtrado = data.copy() # Usar una copia para filtrar
+
+
+            if tecnico != "Todos" and col_tec_nombre in df_filtrado.columns:
+                 df_filtrado = df_filtrado[df_filtrado[col_tec_nombre] == tecnico]
+
+            if empresa != "Todas" and col_empresa in df_filtrado.columns:
+                 df_filtrado = df_filtrado[df_filtrado[col_empresa].astype(str) == empresa]
+
+            if tipo != "Todas" and col_tipo_auditoria in df_filtrado.columns:
+                 df_filtrado = df_filtrado[df_filtrado[col_tipo_auditoria].astype(str) == tipo]
+
+            if patente and col_patente in df_filtrado.columns:
+                 df_filtrado = df_filtrado[df_filtrado[col_patente].astype(str).str.contains(patente, case=False, na=False)]
+
+            if orden_trabajo and col_orden_trabajo in df_filtrado.columns:
+                 df_filtrado = df_filtrado[df_filtrado[col_orden_trabajo].astype(str).str.contains(orden_trabajo, case=False, na=False)]
+
+
+            st.markdown("### 📊 Datos filtrados")
+            st.dataframe(df_filtrado, use_container_width=True)
+
+
+            # --- Ranking Técnicos más Auditados ---
+            st.markdown("---")
+            st.markdown("### 🏆 Ranking Técnicos más Auditados (Finalizadas)")
+
+            columnas_ranking_tecnicos = [col_tec_nombre, col_empresa, col_fecha, 'Estado de Auditoria']
+            if all(col in data_finalizadas.columns for col in columnas_ranking_tecnicos) and col_fecha in data_finalizadas.columns: # Usar data_finalizadas
+                 # Aseguramos que data_finalizadas tiene fecha válida
+                 data_finalizadas_ranking = data_finalizadas[data_finalizadas[col_fecha].notna()].copy()
+
+                 if not data_finalizadas_ranking.empty:
+                      # Selección de rango de fechas
+                      fecha_min_ranking = data_finalizadas_ranking[col_fecha].min().date()
+                      fecha_max_ranking = data_finalizadas_ranking[col_fecha].max().date()
+
+                      fechas = st.date_input(
+                          "📅 Selecciona el rango de fechas (opcional)",
+                          value=[fecha_min_ranking, fecha_max_ranking],
+                          min_value=fecha_min_ranking,
+                          max_value=fecha_max_ranking,
+                          key="rango_fechas_ranking_tecnicos"
+                      )
+
+                      # Si se seleccionaron fechas válidas (lista de 2 elementos)
+                      if isinstance(fechas, list) and len(fechas) == 2:
+                          fecha_inicio, fecha_fin = fechas
+                          # Asegurarse que las fechas seleccionadas son date objects
+                          if isinstance(fecha_inicio, date) and isinstance(fecha_fin, date):
+                              # Filtro por rango de fecha
+                              mask = (data_finalizadas_ranking[col_fecha] >= pd.to_datetime(fecha_inicio)) & (data_finalizadas_ranking[col_fecha] <= pd.to_datetime(fecha_fin))
+                              data_finalizadas_ranking_filtrado = data_finalizadas_ranking.loc[mask].copy()
+                          else:
+                              data_finalizadas_ranking_filtrado = data_finalizadas_ranking.copy()
+                              st.warning("Rango de fechas seleccionado inválido.")
+
+                      else:
+                          data_finalizadas_ranking_filtrado = data_finalizadas_ranking.copy()
+
+
+                      if not data_finalizadas_ranking_filtrado.empty:
+                           # Agrupar por Técnico y Empresa
+                           ranking = (
+                               data_finalizadas_ranking_filtrado
+                               .groupby([col_tec_nombre, col_empresa])
+                               .agg(
+                                    Cantidad_de_Auditorias=(col_fecha, 'size'), # Count non-null dates in the group
+                                    Fechas_de_Auditoria=(col_fecha, lambda x: ', '.join(sorted(x.dt.strftime('%d/%m/%Y').tolist())) if pd.api.types.is_datetime64_any_dtype(x) else 'Fechas no válidas')
+                                )
+                               .reset_index()
+                               .rename(columns={
+                                   col_tec_nombre: "Técnico",
+                                   col_empresa: "Empresa",
+                                   "Cantidad_de_Auditorias": "Cantidad de Auditorías",
+                                   "Fechas_de_Auditoria": "Fechas de Auditoría"
+                               })
+                               .sort_values(by="Cantidad de Auditorías", ascending=False)
+                           )
+                           st.dataframe(ranking, use_container_width=True)
+                      else:
+                           st.info("⚠️ No hay auditorías finalizadas con fecha válida en el rango de fechas seleccionado.")
+
+                 else:
+                     st.info(f"⚠️ No hay auditorías marcadas como '{'finalizada'}' con fecha válida en el archivo para calcular el ranking de técnicos.")
+
             else:
-                st.warning("⚠️ No hay auditorías finalizadas para mostrar auditorías por empresa.")
-        else:
-            st.error("⚠️ Faltan columnas necesarias para calcular auditorías por empresa ('Empresa' y 'Estado de Auditoria').")
+                 st.error(f"Faltan una o más columnas necesarias para calcular el Ranking de Técnicos más Auditados: {', '.join(columnas_ranking_tecnicos)}")
 
 
-        # Gráfico de barras interactivo con Plotly
-        st.subheader("📈 Auditorías por Empresa")
-        fig = px.bar(
-            auditorias_empresa,
-            x='Cantidad de Auditorías',
-            y='Empresa',
-            orientation='h',
-            color='Empresa',
-            text='Cantidad de Auditorías',
-            color_discrete_sequence=px.colors.qualitative.Vivid
-        )
+            # --- KPI Auditorías por Empresa (Técnicos) ---
+            st.markdown("---")
+            st.subheader("🏢 Auditorías Finalizadas por Empresa (Técnicos)")
 
-        fig.update_layout(
-            xaxis_title="Cantidad de Auditorías",
-            yaxis_title="Empresa",
-            yaxis=dict(autorange="reversed"),  # Para que la empresa con más auditorías quede arriba
-            plot_bgcolor='white'
-        )
+            columnas_necesarias_empresa = [col_empresa, 'Estado de Auditoria']
+            if all(col in data.columns for col in columnas_necesarias_empresa):
 
-        st.plotly_chart(fig, use_container_width=True)
+                 if not data_finalizadas.empty:
+                      auditorias_empresa = (
+                          data_finalizadas[col_empresa]
+                          .value_counts()
+                          .rename_axis(col_empresa)
+                          .reset_index(name='Cantidad de Auditorías Finalizadas')
+                      )
+                      auditorias_empresa = auditorias_empresa[auditorias_empresa[col_empresa].str.strip() != '']
 
 
-                # ----------------- KPI Stock Crítico de Herramientas -----------------
-                # ----------------- KPI Stock Crítico de Herramientas -----------------
-        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].apply(normalizar_texto)        
-        st.markdown("### 🔧 Técnicos con Stock Crítico de Herramientas (con detalle de herramientas faltantes)")
+                      st.dataframe(auditorias_empresa, use_container_width=True)
 
-        herramientas_criticas = [
-            "Power meter GPON", "VFL Luz visible para localizar fallas", "Limpiador de conectores tipo “One Click”",
-            "Deschaquetador de primera cubierta para DROP", "Deschaquetador de recubrimiento de FO 125micras Tipo Miller",
-            "Cortadora de precisión 3 pasos", "Regla de corte", "Alcohol isopropilico 99%",
-            "Paños secos para FO", "Crimper para cable UTP", "Deschaquetador para cables con cubierta redonda (UTP, RG6 )",
-            "Tester para cable UTP"
-        ]
+                      # Gráfico de barras interactivo con Plotly
+                      st.markdown("### 📈 Gráfico Auditorías Finalizadas por Empresa")
+                      if not auditorias_empresa.empty:
+                           fig = px.bar(
+                               auditorias_empresa,
+                               x='Cantidad de Auditorías Finalizadas',
+                               y=col_empresa,
+                               orientation='h',
+                               color=col_empresa,
+                               text='Cantidad de Auditorías Finalizadas',
+                               color_discrete_sequence=px.colors.qualitative.Vivid
+                           )
+                           fig.update_layout(
+                               xaxis_title="Cantidad de Auditorías Finalizadas",
+                               yaxis_title=col_empresa,
+                               yaxis=dict(autorange="reversed"),
+                               plot_bgcolor='white'
+                           )
+                           st.plotly_chart(fig, use_container_width=True)
+                      else:
+                           st.info("No hay datos de auditorías finalizadas por empresa para mostrar el gráfico.")
 
-        def obtener_herramientas_faltantes(tecnico_data):
-            faltantes = []
-            for herramienta in herramientas_criticas:
-                if herramienta not in tecnico_data or pd.isna(tecnico_data[herramienta]) or tecnico_data[herramienta] in ["No", "Falta", "0"]:
-                    faltantes.append(herramienta)
-            return faltantes
-
-        # Asegurarse que Fecha es de tipo datetime
-        data['Fecha'] = pd.to_datetime(data['Fecha'], dayfirst=True, errors='coerce')  # Asegúrate de que está en formato de fecha correcto
-
-        # Limpiar posibles espacios y caracteres invisibles en los nombres de técnicos
-        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].str.strip()
-
-        # Filtrar solo auditorías finalizadas
-        data_filtrada = data[data['Estado de Auditoria'].str.strip().str.lower() == 'finalizada'].copy()
-
-        # Para cada técnico, buscar la última fecha de auditoría finalizada
-        idx = data_filtrada.groupby('Nombre de Técnico/Copiar el del Wfm')['Fecha'].idxmax()
-        data_ultima_auditoria = data_filtrada.loc[idx].reset_index(drop=True)
-
-        # Procesamos stock crítico
-        stock_critico_herramientas = data_ultima_auditoria[["Nombre de Técnico/Copiar el del Wfm", "Empresa", "Fecha"] + herramientas_criticas].copy()
-        stock_critico_herramientas["Herramientas Faltantes"] = stock_critico_herramientas.apply(obtener_herramientas_faltantes, axis=1)
-        stock_critico_herramientas = stock_critico_herramientas[stock_critico_herramientas["Herramientas Faltantes"].map(len) > 0]
-
-        # Conteo
-        stock_critico_herramientas["Cantidad Faltantes"] = stock_critico_herramientas["Herramientas Faltantes"].map(len)
-
-        # Orden
-        stock_critico_herramientas = stock_critico_herramientas.sort_values(by="Cantidad Faltantes", ascending=False)
-
-        # Renombramos
-        stock_critico_herramientas = stock_critico_herramientas.rename(columns={"Nombre de Técnico/Copiar el del Wfm": "Técnico"})
-
-        # Agregar icono
-        def agregar_icono_herramientas(row):
-            if row["Cantidad Faltantes"] >= 2:
-                return f"🔴 {row['Técnico']}"
-            elif row["Cantidad Faltantes"] == 1:
-                return f"🟡 {row['Técnico']}"
+                 else:
+                      st.warning(f"⚠️ No hay auditorías marcadas como '{'finalizada'}' en el archivo para mostrar auditorías por empresa.")
             else:
-                return row['Técnico']
+                 st.error(f"⚠️ Faltan columnas necesarias para calcular auditorías por empresa: {', '.join(columnas_necesarias_empresa)}")
 
-        stock_critico_herramientas["Técnico Con Icono"] = stock_critico_herramientas.apply(agregar_icono_herramientas, axis=1)
 
-        stock_critico_herramientas["Herramientas Faltantes"] = stock_critico_herramientas["Herramientas Faltantes"].apply(lambda x: ", ".join(x))
+            # --- KPI Stock Crítico de Herramientas ---
+            st.markdown("---")
+            st.markdown("### 🔧 Técnicos con Stock Crítico de Herramientas")
 
-        # KPI
-        total_tecnicos_stock_critico_herramientas = stock_critico_herramientas.shape[0]
-        st.markdown(f"**🔥 Total técnicos con stock crítico de herramientas: {total_tecnicos_stock_critico_herramientas}**")
+            herramientas_criticas = [ # Tu lista de herramientas críticas
+                "Power meter GPON", "VFL Luz visible para localizar fallas", "Limpiador de conectores tipo “One Click”",
+                "Deschaquetador de primera cubierta para DROP", "Deschaquetador de recubrimiento de FO 125micras Tipo Miller",
+                "Cortadora de precisión 3 pasos", "Regla de corte", "Alcohol isopropilico 99%",
+                "Paños secos para FO", "Crimper para cable UTP", "Deschaquetador para cables con cubierta redonda (UTP, RG6 )",
+                "Tester para cable UTP"
+            ]
 
-        # Filtro empresa
-        empresas_disponibles_herramientas = stock_critico_herramientas['Empresa'].unique()
-        empresa_seleccionada_herramientas = st.selectbox("🔎 Filtrar por Empresa (Herramientas):", options=["Todas"] + list(empresas_disponibles_herramientas))
+            herramientas_criticas_existentes = [h for h in herramientas_criticas if h in data.columns]
+            columnas_stock_herramientas = [col_tec_nombre, col_empresa, col_fecha, 'Estado de Auditoria'] + herramientas_criticas_existentes
 
-        stock_critico_herramientas_general = stock_critico_herramientas.copy()
+            if all(col in data.columns for col in columnas_stock_herramientas[:4]) and herramientas_criticas_existentes:
+                 data_finalizadas_stock_herr = data[(data['Estado de Auditoria'] == 'finalizada') & (data[col_fecha].notna())].copy()
 
-        if empresa_seleccionada_herramientas != "Todas":
-            stock_critico_herramientas = stock_critico_herramientas[stock_critico_herramientas["Empresa"] == empresa_seleccionada_herramientas]
+                 if not data_finalizadas_stock_herr.empty:
+                      idx_ultima_auditoria = data_finalizadas_stock_herr.groupby(col_tec_nombre)[col_fecha].idxmax()
+                      data_ultima_auditoria_herr = data_finalizadas_stock_herr.loc[idx_ultima_auditoria].reset_index(drop=True)
 
-        # Mostrar dataframe
-        st.dataframe(
-            stock_critico_herramientas[["Técnico Con Icono", "Empresa", "Fecha", "Herramientas Faltantes"]],
-            use_container_width=True
-        )
+                      def obtener_herramientas_faltantes(row):
+                           faltantes = []
+                           for herramienta in herramientas_criticas_existentes:
+                               valor = row.get(herramienta)
+                               if pd.isna(valor) or str(valor).strip().lower() in ["no", "falta", "0"]:
+                                   faltantes.append(herramienta)
+                           return faltantes
 
-        # Botón descargar
-        buffer_herramientas = io.BytesIO()
-        with pd.ExcelWriter(buffer_herramientas, engine='xlsxwriter') as writer:
-            stock_critico_herramientas[["Técnico Con Icono", "Empresa", "Fecha", "Herramientas Faltantes"]].rename(columns={"Técnico Con Icono": "Técnico"}).to_excel(writer, index=False, sheet_name='Stock_Critico_Herramientas')
-        buffer_herramientas.seek(0)
+                      columnas_para_stock_herr_procesar = [col_tec_nombre, col_empresa, col_fecha] + herramientas_criticas_existentes
+                      stock_critico_herramientas = data_ultima_auditoria_herr[columnas_para_stock_herr_procesar].copy()
 
-        st.download_button(
-            label="📥 Descargar Técnicos con Stock Crítico Herramientas",
-            data=buffer_herramientas,
-            file_name="tecnicos_stock_critico_herramientas.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].apply(normalizar_texto)
-        st.subheader("📈 Técnicos con Stock Crítico de Herramientas por Empresa")
+                      stock_critico_herramientas["Herramientas Faltantes"] = stock_critico_herramientas.apply(obtener_herramientas_faltantes, axis=1)
+                      stock_critico_herramientas = stock_critico_herramientas[stock_critico_herramientas["Herramientas Faltantes"].map(len) > 0]
 
-        empresas_stock_critico_herramientas = (
-            stock_critico_herramientas_general.groupby('Empresa')
-            .size()
-            .reset_index(name='Cantidad de Técnicos con Stock Crítico Herramientas')
-            .sort_values(by='Cantidad de Técnicos con Stock Crítico Herramientas', ascending=False)
-        )
+                      stock_critico_herramientas["Cantidad Faltantes"] = stock_critico_herramientas["Herramientas Faltantes"].map(len)
+                      stock_critico_herramientas = stock_critico_herramientas.sort_values(by="Cantidad Faltantes", ascending=False)
+                      stock_critico_herramientas = stock_critico_herramientas.rename(columns={col_tec_nombre: "Técnico"})
 
-        st.dataframe(empresas_stock_critico_herramientas, use_container_width=True)
+                      def agregar_icono_herramientas(row):
+                           if row["Cantidad Faltantes"] >= 2: return f"🔴 {row['Técnico']}"
+                           elif row["Cantidad Faltantes"] == 1: return f"🟡 {row['Técnico']}"
+                           else: return row['Técnico']
 
-               
+                      stock_critico_herramientas["Técnico Con Icono"] = stock_critico_herramientas.apply(agregar_icono_herramientas, axis=1)
+                      stock_critico_herramientas["Herramientas Faltantes"] = stock_critico_herramientas["Herramientas Faltantes"].apply(lambda x: ", ".join(x))
 
-        fig_stock_herramientas = px.bar(
-            empresas_stock_critico_herramientas,
-            x='Cantidad de Técnicos con Stock Crítico Herramientas',
-            y='Empresa',
-            orientation='h',
-            color='Empresa',
-            text='Cantidad de Técnicos con Stock Crítico Herramientas',
-            color_discrete_sequence=px.colors.qualitative.Vivid
-        )
+                      total_tecnicos_stock_critico_herramientas = stock_critico_herramientas.shape[0]
+                      st.markdown(f"**🔥 Total técnicos con stock crítico de herramientas: {total_tecnicos_stock_critico_herramientas}**")
 
-        fig_stock_herramientas.update_layout(
-            xaxis_title="Cantidad de Técnicos con Stock Crítico de Herramientas",
-            yaxis_title="Empresa",
-            yaxis=dict(autorange="reversed"),
-            plot_bgcolor='white'
-        )
+                      empresas_disponibles_herr_tabla = stock_critico_herramientas[col_empresa].unique().tolist()
+                      empresas_disponibles_herr_tabla = [e for e in empresas_disponibles_herr_tabla if e.strip() != '' and e.lower() != 'nan']
+                      empresa_seleccionada_herr_tabla = st.selectbox("🔎 Filtrar por Empresa:", options=["Todas"] + empresas_disponibles_herr_tabla, key="filtro_empresa_stock_herr_tabla")
 
-        st.plotly_chart(fig_stock_herramientas, use_container_width=True)
+                      stock_critico_herramientas_general = stock_critico_herramientas.copy()
 
-        
-        # --- STOCK CRÍTICO EPP ---
+                      if empresa_seleccionada_herr_tabla != "Todas":
+                           stock_critico_herramientas = stock_critico_herramientas[stock_critico_herramientas[col_empresa] == empresa_seleccionada_herr_tabla]
 
-        # ----------------- KPI Stock Crítico de EPP -----------------
-        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].apply(normalizar_texto)
-        st.markdown("### 🦺 Técnicos con Stock Crítico de EPP (con detalle de elementos faltantes)")
+                      st.dataframe(
+                          stock_critico_herramientas[["Técnico Con Icono", col_empresa, col_fecha, "Herramientas Faltantes"]],
+                          use_container_width=True
+                      )
 
-        # Lista de EPP críticos a considerar
-        epp_criticos = [
-            "Conos de seguridad", "Refugio de PVC", "Casco de Altura", "Barbiquejo",
-            "Legionario Para Casco", "Guantes Cabritilla", "Guantes Dielectricos",
-            "Guantes trabajo Fino", "Zapatos de Seguridad Dielectricos",
-            "LENTE DE SEGURIDAD (CLAROS Y OSCUROS)", "Arnes Dielectrico",
-            "Estrobo Dielectrico", "Cuerda de vida /Dielectrico", "Chaleco reflectante",
-            "DETECTOR DE TENSION TIPO LAPIZ CON LINTERNA", "Bloqueador Solar"
-        ]
+                      buffer_herramientas = io.BytesIO()
+                      with pd.ExcelWriter(buffer_herramientas, engine='xlsxwriter') as writer:
+                           stock_critico_herramientas[["Técnico Con Icono", col_empresa, col_fecha, "Herramientas Faltantes"]].rename(columns={"Técnico Con Icono": "Técnico"}).to_excel(writer, index=False, sheet_name='Stock_Critico_Herramientas')
+                      buffer_herramientas.seek(0)
 
-        # Definir EPP vitales
-        epp_vitales = ["Casco de Altura", "Zapatos de Seguridad Dielectricos", "Arnes Dielectrico", "Estrobo Dielectrico"]
+                      st.download_button(
+                          label="📥 Descargar Técnicos con Stock Crítico Herramientas (Tabla Filtrada)",
+                          data=buffer_herramientas,
+                          file_name="tecnicos_stock_critico_herramientas.xlsx",
+                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                      )
 
-        # Función para verificar EPP faltantes
-        def obtener_epp_faltantes(tecnico_data):
-            faltantes = []
-            for epp in epp_criticos:
-                if epp not in tecnico_data or pd.isna(tecnico_data[epp]) or tecnico_data[epp] in ["No", "Falta", "0"]:
-                    faltantes.append(epp)
-            return faltantes
+                      st.markdown("---")
+                      st.subheader("📈 Técnicos con Stock Crítico de Herramientas por Empresa")
 
-        # Asegurarse que Fecha es tipo datetime
-        data['Fecha'] = pd.to_datetime(data['Fecha'], dayfirst=True, errors='coerce')
+                      if not stock_critico_herramientas_general.empty:
+                           empresas_stock_critico_herramientas = (
+                               stock_critico_herramientas_general.groupby(col_empresa)
+                               .size()
+                               .reset_index(name='Cantidad de Técnicos con Stock Crítico Herramientas')
+                               .sort_values(by='Cantidad de Técnicos con Stock Crítico Herramientas', ascending=False)
+                           )
+                           empresas_stock_critico_herramientas = empresas_stock_critico_herramientas[empresas_stock_critico_herramientas[col_empresa].str.strip() != '']
 
-        # Limpiar posibles espacios en nombres de técnicos
-        data['Nombre de Técnico/Copiar el del Wfm'] = data['Nombre de Técnico/Copiar el del Wfm'].str.strip()
+                           if not empresas_stock_critico_herramientas.empty:
+                                fig_stock_herramientas = px.bar(
+                                    empresas_stock_critico_herramientas,
+                                    x='Cantidad de Técnicos con Stock Crítico Herramientas',
+                                    y=col_empresa,
+                                    orientation='h',
+                                    color=col_empresa,
+                                    text='Cantidad de Técnicos con Stock Crítico Herramientas',
+                                    color_discrete_sequence=px.colors.qualitative.Vivid
+                                )
+                                fig_stock_herramientas.update_layout(
+                                    xaxis_title="Cantidad de Técnicos con Stock Crítico de Herramientas",
+                                    yaxis_title=col_empresa,
+                                    yaxis=dict(autorange="reversed"),
+                                    plot_bgcolor='white'
+                                )
+                                st.plotly_chart(fig_stock_herramientas, use_container_width=True)
+                           else:
+                                st.info("No hay datos suficientes para el gráfico de stock crítico de herramientas por empresa.")
+                      else:
+                           st.info("No hay técnicos con stock crítico de herramientas para mostrar el gráfico.")
 
-        # Filtrar solo auditorías finalizadas
-        data_filtrada_epp = data[data['Estado de Auditoria'].str.strip().str.lower() == 'finalizada'].copy()
 
-        # Para cada técnico, tomar la última fecha de auditoría finalizada
-        idx_epp = data_filtrada_epp.groupby('Nombre de Técnico/Copiar el del Wfm')['Fecha'].idxmax()
-        data_ultima_auditoria_epp = data_filtrada_epp.loc[idx_epp].reset_index(drop=True)
+                 else:
+                      st.info(f"⚠️ No hay auditorías finalizadas con fecha válida en el archivo para calcular el Stock Crítico de Herramientas.")
 
-        # Procesar stock crítico EPP
-        stock_critico_epp = data_ultima_auditoria_epp[["Nombre de Técnico/Copiar el del Wfm", "Empresa", "Fecha"] + epp_criticos].copy()
-        stock_critico_epp["EPP Faltantes"] = stock_critico_epp.apply(obtener_epp_faltantes, axis=1)
-        stock_critico_epp = stock_critico_epp[stock_critico_epp["EPP Faltantes"].map(len) > 0]
-
-        # Contar cantidad de faltantes
-        stock_critico_epp["Cantidad Faltantes"] = stock_critico_epp["EPP Faltantes"].map(len)
-
-        # Ordenar de más a menos
-        stock_critico_epp = stock_critico_epp.sort_values(by="Cantidad Faltantes", ascending=False)
-
-        # Renombrar técnico
-        stock_critico_epp = stock_critico_epp.rename(columns={"Nombre de Técnico/Copiar el del Wfm": "Técnico"})
-
-        # Agregar el circulito 🔴🟡
-        def agregar_icono_epp(row):
-            faltantes_vitales = [epp for epp in row["EPP Faltantes"] if epp in epp_vitales]
-            if len(faltantes_vitales) >= 2:
-                return f"🔴 {row['Técnico']}"
-            elif len(faltantes_vitales) == 1:
-                return f"🟡 {row['Técnico']}"
             else:
-                return row['Técnico']
-
-        stock_critico_epp["Técnico Con Icono"] = stock_critico_epp.apply(agregar_icono_epp, axis=1)
-
-        # Convertir lista de EPP a texto
-        stock_critico_epp["EPP Faltantes"] = stock_critico_epp["EPP Faltantes"].apply(lambda x: ", ".join(x))
-
-        # KPI Total técnicos
-        total_tecnicos_stock_critico_epp = stock_critico_epp.shape[0]
-        st.markdown(f"**🔥 Total técnicos con stock crítico de EPP: {total_tecnicos_stock_critico_epp}**")
-
-        # Filtro por empresa
-        empresas_disponibles_epp = stock_critico_epp['Empresa'].unique()
-        empresa_seleccionada_epp = st.selectbox("🔎 Filtrar por Empresa (EPP):", options=["Todas"] + list(empresas_disponibles_epp))
-
-        stock_critico_epp_general = stock_critico_epp.copy()
-
-        if empresa_seleccionada_epp != "Todas":
-            stock_critico_epp = stock_critico_epp[stock_critico_epp["Empresa"] == empresa_seleccionada_epp]
-
-        # Mostrar dataframe
-        st.dataframe(
-            stock_critico_epp[["Técnico Con Icono", "Empresa", "Fecha", "EPP Faltantes"]],
-            use_container_width=True
-        )
-
-        # Botón descargar
-        buffer_epp = io.BytesIO()
-        with pd.ExcelWriter(buffer_epp, engine='xlsxwriter') as writer:
-            stock_critico_epp[["Técnico Con Icono", "Empresa", "Fecha", "EPP Faltantes"]].rename(columns={"Técnico Con Icono": "Técnico"}).to_excel(writer, index=False, sheet_name='Stock_Critico_EPP')
-        buffer_epp.seek(0)
-
-        st.download_button(
-            label="📥 Descargar Técnicos con Stock Crítico EPP",
-            data=buffer_epp,
-            file_name="tecnicos_stock_critico_epp.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        # Gráfico por empresa
-        st.subheader("📈 Técnicos con Stock Crítico de EPP por Empresa")
-
-        empresas_stock_critico_epp = (
-            stock_critico_epp_general.groupby('Empresa')
-            .size()
-            .reset_index(name='Cantidad de Técnicos con Stock Crítico EPP')
-            .sort_values(by='Cantidad de Técnicos con Stock Crítico EPP', ascending=False)
-        )
-
-        fig_stock_epp = px.bar(
-            empresas_stock_critico_epp,
-            x='Cantidad de Técnicos con Stock Crítico EPP',
-            y='Empresa',
-            orientation='h',
-            color='Empresa',
-            text='Cantidad de Técnicos con Stock Crítico EPP',
-            color_discrete_sequence=px.colors.qualitative.Vivid
-        )
-
-        fig_stock_epp.update_layout(
-            xaxis_title="Cantidad de Técnicos con Stock Crítico de EPP",
-            yaxis_title="Empresa",
-            yaxis=dict(autorange="reversed"),
-            plot_bgcolor='white'
-        )
-
-        st.plotly_chart(fig_stock_epp, use_container_width=True)
-
-        # --- Resumen General de KPIs ---
-        st.markdown("---")
-        st.subheader("📊 Resumen General de Stock Crítico")
-
-        st.metric(label="🔥 Total Técnicos con EPP Crítico", value=total_tecnicos_stock_critico_epp)
-        st.metric(label="🚀 Total Técnicos con Herramientas Críticas", value=total_tecnicos_stock_critico_herramientas)
-
-        
-
-        if archivo:
-            # Llamamos a la función de KPIs
-            kpis, empresa_kpis_df, total_auditorias, data = process_data(archivo)   
-
-    with tab2:
-
-        # # ----------------- 🎯 Dashboard de Cumplimiento -----------------
-        # Ranking de auditores por trabajos realizados
-        st.markdown("### Ranking de Auditores por Trabajos Realizados")
-
-        # Filtrar auditorías finalizadas
-        data_finalizadas = data[data['Estado de Auditoria'] == 'finalizada']
-
-        # Agrupar por auditor y contar las auditorías finalizadas
-        ranking_auditores = (
-            data_finalizadas.groupby("Información del Auditor")  # Agrupar por Auditor
-            .size()  # Contar las auditorías
-            .reset_index(name="Cantidad de Auditorías")  # Resetear el índice y renombrar la columna
-            .rename(columns={"Información del Auditor": "Auditor"})  # Renombrar la columna
-            .sort_values(by="Cantidad de Auditorías", ascending=False)  # Ordenar por cantidad de auditorías
-        )
-
-        st.dataframe(ranking_auditores, use_container_width=True)
-
-        # Verificar si las columnas necesarias existen para el KPI de distribución de auditorías
-        if 'Información del Auditor' in data.columns and 'Empresa' in data.columns and 'Fecha' in data.columns:
-            # Agrupar por auditor y empresa y concatenar las fechas de las auditorías (solo las finalizadas)
-            distribucion_auditorias = data_finalizadas.groupby(['Información del Auditor', 'Empresa']).agg(
-                Cantidad_de_Auditorias=('Fecha', 'size'),
-                Fechas_de_Auditoria=('Fecha', lambda x: ', '.join(pd.to_datetime(x).dt.strftime('%d/%m/%Y')))
-            ).reset_index()
-
-            # Mostrar el KPI
-            st.markdown("Distribución de Auditorías entre Empresas con Fechas")
-            st.dataframe(distribucion_auditorias)
-        else:
-            st.error("Faltan columnas necesarias para calcular el KPI de distribución de auditorías ('Información del Auditor', 'Empresa' y 'Fecha').")
-
-            # ----------------- KPI: Auditorías por Región -----------------
-            
-        st.subheader("🌎 Auditorías por Región")
-
-        # Filtrar auditorías finalizadas
-        data_finalizadas = data[data['Estado de Auditoria'] == 'finalizada']
-
-        # Agrupar datos por Región y contar cantidad de auditorías finalizadas
-        auditorias_por_region = (
-            data_finalizadas.groupby('Region')  # Agrupar por Región
-            .size()  # Contar las auditorías
-            .reset_index(name='Cantidad de Auditorías')  # Resetear el índice y renombrar la columna
-            .sort_values(by='Cantidad de Auditorías', ascending=False)  # Ordenar por cantidad de auditorías
-        )
-
-        # Crear gráfico de barras horizontal
-        fig_auditorias_region = px.bar(
-            auditorias_por_region,
-            x='Cantidad de Auditorías',
-            y='Region',
-            orientation='h',
-            color='Region',
-            text='Cantidad de Auditorías',
-            color_discrete_sequence=px.colors.qualitative.Set2
-        )
-
-        fig_auditorias_region.update_layout(
-            xaxis_title="Cantidad de Auditorías",
-            yaxis_title="Región",
-            yaxis=dict(autorange="reversed"),
-            plot_bgcolor='white'
-        )
-
-        st.plotly_chart(fig_auditorias_region, use_container_width=True)
-
-        # Calcular el total de auditorías finalizadas
-        total_auditorias_finalizadas = len(data[data['Estado de Auditoria'] == 'finalizada'])
-
-        # Mostrar la etiqueta con el total de auditorías finalizadas
-        st.markdown(f"""
-            <div style="background-color: #f0f0f5; padding: 15px 25px; border-radius: 8px; font-size: 24px; font-weight: bold; color: #333;">
-                <span style="color: #007bff;">Total de Auditorías Finalizadas: </span><span style="color: #28a745;">{total_auditorias_finalizadas}</span>
-            </div>
-        """, unsafe_allow_html=True)
+                 st.error(f"⚠️ Faltan columnas necesarias para calcular el Stock Crítico de Herramientas. Asegúrate de incluir {', '.join(columnas_stock_herramientas[:4])} y al menos una de las herramientas críticas: {', '.join(herramientas_criticas)}")
 
 
-        st.subheader("📋 Ranking de Auditores por información completa")
+            # --- KPI Stock Crítico de EPP ---
+            st.markdown("---")
+            st.markdown("### 🦺 Técnicos con Stock Crítico de EPP")
 
-        # Filtrar solo auditorías finalizadas
-        data_finalizadas = data[data["Estado de Auditoria"].str.lower() == "finalizada"]
-
-        # Calcular el porcentaje de campos llenos por cada auditoría
-        total_columnas = data_finalizadas.shape[1]
-        data_finalizadas["% Completitud"] = data_finalizadas.notna().sum(axis=1) / total_columnas * 100
-
-        # Agrupar por auditor y calcular el promedio
-        ranking_completitud = data_finalizadas.groupby("Información del Auditor")["% Completitud"].mean().reset_index()
-        ranking_completitud = ranking_completitud.sort_values(by="% Completitud", ascending=False)
-
-        # Formatear porcentaje con coma y símbolo %, y aplicar color azul
-        def formato_porcentaje(valor):
-            return f"{valor:,.1f}%".replace('.', ',')  # Cambia . por , y añade %
-
-        def estilo_azul(val):
-            return 'color: blue; font-weight: bold;' if isinstance(val, float) else ''
-
-        # Mostrar tabla con estilo
-        st.dataframe(
-            ranking_completitud.style
-            .format({"% Completitud": formato_porcentaje})
-            .applymap(estilo_azul, subset=["% Completitud"]),
-            use_container_width=True
-        )
+            epp_criticos = [ # Tu lista de EPP críticos
+                "Conos de seguridad", "Refugio de PVC", "Casco de Altura", "Barbiquejo",
+                "Legionario Para Casco", "Guantes Cabritilla", "Guantes Dielectricos",
+                "Guantes trabajo Fino", "Zapatos de Seguridad Dielectricos",
+                "LENTE DE SEGURIDAD (CLAROS Y OSCUROS)", "Arnes Dielectrico",
+                "Estrobo Dielectrico", "Cuerda de vida /Dielectrico", "Chaleco reflectante",
+                "DETECTOR DE TENSION TIPO LAPIZ CON LINTERNA", "Bloqueador Solar"
+            ]
+            epp_vitales = ["Casco de Altura", "Zapatos de Seguridad Dielectricos", "Arnes Dielectrico", "Estrobo Dielectrico"] # Tu lista EPP vitales
 
 
+            epp_criticos_existentes = [e for e in epp_criticos if e in data.columns]
+            columnas_stock_epp = [col_tec_nombre, col_empresa, col_fecha, 'Estado de Auditoria'] + epp_criticos_existentes
+
+            if all(col in data.columns for col in columnas_stock_epp[:4]) and epp_criticos_existentes:
+                 data_finalizadas_stock_epp = data[(data['Estado de Auditoria'] == 'finalizada') & (data[col_fecha].notna())].copy()
+
+                 if not data_finalizadas_stock_epp.empty:
+                      idx_ultima_auditoria_epp = data_finalizadas_stock_epp.groupby(col_tec_nombre)[col_fecha].idxmax()
+                      data_ultima_auditoria_epp = data_finalizadas_stock_epp.loc[idx_ultima_auditoria_epp].reset_index(drop=True)
+
+                      def obtener_epp_faltantes(row):
+                           faltantes = []
+                           for epp in epp_criticos_existentes:
+                               valor = row.get(epp)
+                               if pd.isna(valor) or str(valor).strip().lower() in ["no", "falta", "0"]:
+                                   faltantes.append(epp)
+                           return faltantes
+
+                      columnas_para_stock_epp_procesar = [col_tec_nombre, col_empresa, col_fecha] + epp_criticos_existentes
+                      stock_critico_epp = data_ultima_auditoria_epp[columnas_para_stock_epp_procesar].copy()
+
+                      stock_critico_epp["EPP Faltantes"] = stock_critico_epp.apply(obtener_epp_faltantes, axis=1)
+                      stock_critico_epp = stock_critico_epp[stock_critico_epp["EPP Faltantes"].map(len) > 0]
+
+                      stock_critico_epp["Cantidad Faltantes"] = stock_critico_epp["EPP Faltantes"].map(len)
+                      stock_critico_epp = stock_critico_epp.sort_values(by="Cantidad Faltantes", ascending=False)
+                      stock_critico_epp = stock_critico_epp.rename(columns={col_tec_nombre: "Técnico"})
+
+                      def agregar_icono_epp(row):
+                           faltantes_vitales = [epp for epp in row["EPP Faltantes"] if epp in epp_vitales]
+                           if len(faltantes_vitales) >= 2: return f"🔴 {row['Técnico']}"
+                           elif len(faltantes_vitales) == 1: return f"🟡 {row['Técnico']}"
+                           else: return row['Técnico']
+
+                      stock_critico_epp["Técnico Con Icono"] = stock_critico_epp.apply(agregar_icono_epp, axis=1)
+                      stock_critico_epp["EPP Faltantes"] = stock_critico_epp["EPP Faltantes"].apply(lambda x: ", ".join(x))
+
+                      total_tecnicos_stock_critico_epp = stock_critico_epp.shape[0]
+                      st.markdown(f"**🔥 Total técnicos con stock crítico de EPP: {total_tecnicos_stock_critico_epp}**")
+
+                      empresas_disponibles_epp_tabla = stock_critico_epp[col_empresa].unique().tolist()
+                      empresas_disponibles_epp_tabla = [e for e in empresas_disponibles_epp_tabla if e.strip() != '' and e.lower() != 'nan']
+                      empresa_seleccionada_epp_tabla = st.selectbox("🔎 Filtrar por Empresa:", options=["Todas"] + empresas_disponibles_epp_tabla, key="filtro_empresa_stock_epp_tabla")
+
+                      stock_critico_epp_general = stock_critico_epp.copy()
+
+                      if empresa_seleccionada_epp_tabla != "Todas":
+                           stock_critico_epp = stock_critico_epp[stock_critico_epp[col_empresa] == empresa_seleccionada_epp_tabla]
+
+
+                      st.dataframe(
+                          stock_critico_epp[["Técnico Con Icono", col_empresa, col_fecha, "EPP Faltantes"]],
+                          use_container_width=True
+                      )
+
+                      buffer_epp = io.BytesIO()
+                      with pd.ExcelWriter(buffer_epp, engine='xlsxwriter') as writer:
+                           stock_critico_epp[["Técnico Con Icono", col_empresa, col_fecha, "EPP Faltantes"]].rename(columns={"Técnico Con Icono": "Técnico"}).to_excel(writer, index=False, sheet_name='Stock_Critico_EPP')
+                      buffer_epp.seek(0)
+
+                      st.download_button(
+                          label="📥 Descargar Técnicos con Stock Crítico EPP (Tabla Filtrada)",
+                          data=buffer_epp,
+                          file_name="tecnicos_stock_critico_epp.xlsx",
+                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                      )
+
+                      st.markdown("---")
+                      st.subheader("📈 Técnicos con Stock Crítico de EPP por Empresa")
+
+                      if not stock_critico_epp_general.empty:
+                           empresas_stock_critico_epp = (
+                               stock_critico_epp_general.groupby(col_empresa)
+                               .size()
+                               .reset_index(name='Cantidad de Técnicos con Stock Crítico EPP')
+                               .sort_values(by='Cantidad de Técnicos con Stock Crítico EPP', ascending=False)
+                           )
+                           empresas_stock_critico_epp = empresas_stock_critico_epp[empresas_stock_critico_epp[col_empresa].str.strip() != '']
+
+                           if not empresas_stock_critico_epp.empty:
+                                fig_stock_epp = px.bar(
+                                    empresas_stock_critico_epp,
+                                    x='Cantidad de Técnicos con Stock Crítico EPP',
+                                    y=col_empresa,
+                                    orientation='h',
+                                    color=col_empresa,
+                                    text='Cantidad de Técnicos con Stock Crítico EPP',
+                                    color_discrete_sequence=px.colors.qualitative.Vivid
+                                )
+                                fig_stock_epp.update_layout(
+                                    xaxis_title="Cantidad de Técnicos con Stock Crítico de EPP",
+                                    yaxis_title=col_empresa,
+                                    yaxis=dict(autorange="reversed"),
+                                    plot_bgcolor='white'
+                                )
+                                st.plotly_chart(fig_stock_epp, use_container_width=True)
+                           else:
+                                st.info("No hay datos suficientes para el gráfico de stock crítico de EPP por empresa.")
+                      else:
+                           st.info("No hay técnicos con stock crítico de EPP para mostrar el gráfico.")
+
+
+                 else:
+                     st.info(f"⚠️ No hay auditorías finalizadas con fecha válida en el archivo para calcular el Stock Crítico de EPP.")
+
+            else:
+                 st.error(f"⚠️ Faltan columnas necesarias para calcular el Stock Crítico de EPP. Asegúrate de incluir {', '.join(columnas_stock_epp[:4])} y al menos uno de los EPP críticos: {', '.join(epp_criticos)}")
+
+
+            # --- Resumen General de Stock Crítico ---
+            st.markdown("---")
+            st.subheader("📊 Resumen General de Stock Crítico")
+            # Calcular totales usando los DataFrames _general antes de filtrar por tabla
+            if 'stock_critico_epp_general' in locals(): # Verifica si la variable fue creada
+                 total_tecnicos_stock_critico_epp = stock_critico_epp_general.shape[0]
+            else:
+                 total_tecnicos_stock_critico_epp = 0
+
+            if 'stock_critico_herramientas_general' in locals():
+                 total_tecnicos_stock_critico_herramientas = stock_critico_herramientas_general.shape[0]
+            else:
+                 total_tecnicos_stock_critico_herramientas = 0
+
+            st.metric(label="🔥 Total Técnicos con EPP Crítico", value=total_tecnicos_stock_critico_epp)
+            st.metric(label="🔧 Total Técnicos con Herramientas Críticas", value=total_tecnicos_stock_critico_herramientas)
+
+            if archivo:
+                # Llamamos a la función de KPIs
+                kpis, empresa_kpis_df, total_auditorias, data = process_data(archivo)
+
+
+        # --- Contenido de la Pestaña 2 ---
+        with tab2:
+            st.header("🛠️ Información de Auditores")
+
+            # Nombres de columnas clave para Auditores (ya definidos arriba)
+            col_auditor = 'Información del Auditor'
+            col_estado = 'Estado de Auditoria' # Ya normalizada
+            col_fecha = 'Fecha' # Ya datetime
+            col_id_trabajo = 'Número de Orden de Trabajo/ ID externo'
+            col_empresa = 'Empresa' # Ya string
+            col_region = 'Region' # Usado en esta pestaña
+
+
+            # --- SECCIÓN: Ranking de Auditores por Trabajos Realizados (FINALIZADAS) ---
+            st.markdown("### Ranking de Auditores por Trabajos Realizados (Finalizadas)") # Título ajustado
+
+            # Verificar que las columnas necesarias existen en data_finalizadas
+            columnas_ranking_auditores = [col_auditor, col_estado] # Estado ya usado para crear data_finalizadas
+            if col_auditor in data_finalizadas.columns:
+
+                 if not data_finalizadas.empty: # data_finalizadas ya filtrada y con Auditor normalizado
+                      # Agrupar por auditor y contar las auditorías finalizadas
+                      ranking_auditores = (
+                          data_finalizadas.groupby(col_auditor) # Auditor ya normalizado
+                          .size()
+                          .reset_index(name="Cantidad de Auditorías Finalizadas") # Renombrado
+                          .rename(columns={col_auditor: "Auditor"})
+                          .sort_values(by="Cantidad de Auditorías Finalizadas", ascending=False)
+                      )
+                      st.dataframe(ranking_auditores, use_container_width=True)
+                 else:
+                      st.info(f"No hay auditorías marcadas como '{'finalizada'}' en el archivo para calcular el ranking de auditores.")
+
+            else:
+                 st.error(f"Falta la columna necesaria para el Ranking de Auditores por Trabajos Realizados: {col_auditor}")
+
+
+            # --- NUEVA SECCIÓN: Conteo de Auditorías por Auditor por Día (Todas con ID válido) ---
+            st.markdown("---") # Separador
+            st.subheader("🗓️ Auditorías por Auditor por Día ") # Título ajustado
+
+            # Validar y preparar datos para este cálculo específico
+            # Necesitamos al menos Fecha válida, Auditor válido e ID de trabajo válido
+            # Usamos el DataFrame 'data' que ya tiene la Fecha convertida (con NaT) y Auditor normalizado
+            data_para_conteo_diario = data.dropna(subset=[col_fecha, col_auditor, col_id_trabajo]).copy()
+
+            if not data_para_conteo_diario.empty:
+                 # Asegurarnos que la columna Fecha es datetime
+                 if pd.api.types.is_datetime64_any_dtype(data_para_conteo_diario[col_fecha]):
+
+                     # --- 1. Calcular el conteo por día y auditor ---
+                     conteo_auditorias_diario = data_para_conteo_diario.groupby([
+                         data_para_conteo_diario[col_fecha].dt.date, # Agrupar solo por la fecha (el día)
+                         data_para_conteo_diario[col_auditor]        # Agrupar por el auditor (ya normalizado)
+                     ])[col_id_trabajo].nunique().reset_index() # nunique() cuenta valores únicos por grupo
+
+                     # Renombrar las columnas resultantes
+                     conteo_auditorias_diario.columns = ['Fecha', 'Auditor', 'Total_Auditorias']
+
+                     # Ordenar el resultado por fecha y auditor (opcional)
+                     conteo_auditorias_diario = conteo_auditorias_diario.sort_values(by=['Fecha', 'Auditor'])
+
+
+                     # --- 2. Agregar el filtro por fecha específica ---
+                     st.markdown("---")
+                     st.subheader("🔍 Filtro por Día Específico para el Conteo Diario")
+
+                     # Obtener el rango de fechas disponibles en los datos calculados del conteo diario
+                     try:
+                         min_date_diario = conteo_auditorias_diario['Fecha'].min()
+                         max_date_diario = conteo_auditorias_diario['Fecha'].max()
+                         # Manejar NaT si existen
+                         if pd.isna(max_date_diario): max_date_diario = date.today()
+                         if pd.isna(min_date_diario): min_date_diario = date.today()
+
+                         # Valor por defecto para el selector: el último día con datos o el único día
+                         default_date_diario = max_date_diario if min_date_diario != max_date_diario else min_date_diario
+                         # Asegurarse de que default_date es un objeto date
+                         if isinstance(default_date_diario, pd.Timestamp):
+                              default_date_diario = default_date_diario.date()
+
+                     except Exception:
+                         # En caso de error o si conteo_auditorias_diario está vacío
+                         min_date_diario = date.today()
+                         max_date_diario = date.today()
+                         default_date_diario = date.today()
+
+
+                     # Widget st.date_input para seleccionar una fecha
+                     fecha_seleccionada_filtro_diario = st.date_input(
+                         "Selecciona una fecha para ver el conteo:",
+                         value=default_date_diario, # Establece el valor inicial
+                         min_value=min_date_diario, # Define la fecha mínima seleccionable
+                         max_value=max_date_diario, # Define la fecha máxima seleccionable
+                         key="filtro_conteo_fecha_input_auditor_diario" # Añadir una key única globalmente
+                     )
+
+                     # --- 3. Aplicar el filtro de fecha ---
+                     resultados_filtrados_diario = pd.DataFrame() # Inicializar
+
+                     if fecha_seleccionada_filtro_diario: # Si se seleccionó una fecha
+                         # Convertir a objeto date
+                         fecha_a_comparar_diario = fecha_seleccionada_filtro_diario
+
+                         # Filtrar el DataFrame de conteo diario por la fecha seleccionada
+                         resultados_filtrados_diario = conteo_auditorias_diario[
+                             conteo_auditorias_diario['Fecha'] == fecha_a_comparar_diario
+                         ].copy()
+
+
+                         # --- 4. Mostrar los resultados filtrados en una tabla ---
+                         st.markdown(f"### Resultados para la fecha: **{fecha_seleccionada_filtro_diario.strftime('%d/%m/%Y')}**")
+
+                         if not resultados_filtrados_diario.empty:
+                             # Mostrar la tabla con el conteo por auditor para el día seleccionado
+                             st.dataframe(resultados_filtrados_diario, use_container_width=True)
+                         else:
+                             st.info(f"ℹ️ No se registraron auditorías (con ID válido) para ningún auditor en la fecha seleccionada (**{fecha_seleccionada_filtro_diario.strftime('%d/%m/%Y')}**).")
+
+                     else:
+                          st.warning("⚠️ Por favor, selecciona una fecha en el filtro para visualizar los resultados del conteo diario.")
+
+                 else:
+                      st.error("Error interno: La columna de fecha no es de tipo datetime después de la conversión inicial. Revisa el formato de fecha en tu archivo Excel.")
+
+
+            else:
+                 # Mensaje si no hay datos suficientes DESPUÉS de limpiar para este cálculo
+                 st.warning(f"⚠️ El archivo Excel cargado no contiene suficientes filas con información válida ({col_fecha}, {col_auditor}, {col_id_trabajo}) para calcular el conteo de auditorías por auditor por día.")
+
+
+            # --- KPI Distribución de Auditorías entre Empresas con Fechas (Usar data_finalizadas) ---
+            st.markdown("---") # Separador
+            st.markdown("### Distribución de Auditorías Finalizadas entre Empresas con Fechas")
+
+            columnas_necesarias_distribucion = [col_auditor, col_empresa, col_fecha]
+            if all(col in data_finalizadas.columns for col in columnas_necesarias_distribucion) and col_fecha in data_finalizadas.columns:
+                 # Asegurarse que 'Fecha' en data_finalizadas es datetime
+                 if pd.api.types.is_datetime64_any_dtype(data_finalizadas[col_fecha]):
+                      distribucion_auditorias = data_finalizadas.groupby([col_auditor, col_empresa]).agg(
+                          Cantidad_de_Auditorias=(col_fecha, 'size'),
+                          Fechas_de_Auditoria=(col_fecha, lambda x: ', '.join(sorted(x.dt.strftime('%d/%m/%Y').tolist())) if pd.api.types.is_datetime64_any_dtype(x) else 'Fechas no válidas')
+                      ).reset_index()
+
+                      if not distribucion_auditorias.empty:
+                           st.dataframe(distribucion_auditorias, use_container_width=True)
+                      else:
+                           st.info("No hay datos suficientes para la distribución de auditorías finalizadas por auditor y empresa.")
+                 else:
+                      st.error(f"Error: La columna '{col_fecha}' en las auditorías finalizadas no es de tipo datetime.")
+
+            else:
+                 st.error(f"Faltan columnas necesarias para calcular la distribución de auditorías: {', '.join(columnas_necesarias_distribucion)}")
+
+
+            # --- KPI: Auditorías por Región (Usar data_finalizadas) ---
+            st.markdown("---") # Separador
+            st.subheader("🌎 Auditorías Finalizadas por Región")
+
+            col_region = 'Region' # Asegurarse que este nombre es correcto
+
+            # Verificar columna necesaria
+            if col_region in data_finalizadas.columns:
+                 # Asegurarse que la columna de región no tiene valores vacíos/NaN para agrupar
+                 data_finalizadas_region = data_finalizadas.dropna(subset=[col_region]).copy()
+
+                 if not data_finalizadas_region.empty:
+                      # Agrupar datos por Región y contar cantidad de auditorías finalizadas
+                      auditorias_por_region = (
+                          data_finalizadas_region.groupby(col_region)
+                          .size()
+                          .reset_index(name='Cantidad de Auditorías Finalizadas')
+                          .sort_values(by='Cantidad de Auditorías Finalizadas', ascending=False)
+                      )
+                      auditorias_por_region = auditorias_por_region[auditorias_por_region[col_region].str.strip() != '']
+
+
+                      if not auditorias_por_region.empty:
+                           fig_auditorias_region = px.bar(
+                               auditorias_por_region,
+                               x='Cantidad de Auditorías Finalizadas',
+                               y=col_region,
+                               orientation='h',
+                               color=col_region,
+                               text='Cantidad de Auditorías Finalizadas',
+                               color_discrete_sequence=px.colors.qualitative.Set2
+                           )
+                           fig_auditorias_region.update_layout(
+                               xaxis_title="Cantidad de Auditorías Finalizadas",
+                               yaxis_title=col_region,
+                               yaxis=dict(autorange="reversed"),
+                               plot_bgcolor='white'
+                           )
+                           st.plotly_chart(fig_auditorias_region, use_container_width=True)
+                      else:
+                           st.info(f"No hay auditorías finalizadas con información de '{col_region}'.")
+
+                 else:
+                      st.info(f"No hay auditorías finalizadas con información de '{col_region}'.")
+            else:
+                 st.error(f"Falta la columna '{col_region}' para calcular las auditorías por región.")
+
+
+            # Calcular el total de auditorías finalizadas (ya lo tenías)
+            st.markdown("---")
+            if 'Estado de Auditoria' in data.columns:
+                 total_auditorias_finalizadas = len(data[data['Estado de Auditoria'] == 'finalizada'])
+                 st.markdown(f"""
+                      <div style="background-color: #f0f0f5; padding: 15px 25px; border-radius: 8px; font-size: 24px; font-weight: bold; color: #333;">
+                          <span style="color: #007bff;">Total de Auditorías Finalizadas en el archivo: </span><span style="color: #28a745;">{total_auditorias_finalizadas}</span>
+                      </div>
+                  """, unsafe_allow_html=True)
+            else:
+                 st.error("Falta la columna 'Estado de Auditoria' para calcular el total de auditorías finalizadas.")
+
+
+            # ----------------- KPI Ranking de Auditores por información completa (Usar data_finalizadas) -----------------
+            st.markdown("---")
+            st.subheader("📋 Ranking de Auditores por Información Completa")
+
+            columnas_completitud = [col_auditor, col_estado] # Estado ya usado
+
+            if col_auditor in data_finalizadas.columns: # Verificar si el auditor existe en data_finalizadas
+
+                 if not data_finalizadas.empty:
+                      data_finalizadas_completitud = data_finalizadas.copy()
+                      total_columnas = data_finalizadas_completitud.shape[1]
+                      if total_columnas > 0:
+                           data_finalizadas_completitud["% Completitud"] = data_finalizadas_completitud.notna().sum(axis=1) / total_columnas * 100
+
+                           ranking_completitud = data_finalizadas_completitud.groupby(col_auditor)["% Completitud"].mean().reset_index()
+                           ranking_completitud = ranking_completitud.sort_values(by="% Completitud", ascending=False)
+
+                           def formato_porcentaje(valor):
+                                if pd.isna(valor): return ""
+                                return f"{valor:,.1f}%".replace('.', ',')
+
+                           def estilo_azul(val):
+                               return 'color: blue; font-weight: bold;' if isinstance(val, (int, float)) and not pd.isna(val) else ''
+
+                           st.dataframe(
+                               ranking_completitud.style
+                               .format({"% Completitud": formato_porcentaje})
+                               .map(estilo_azul, subset=["% Completitud"]),
+                               use_container_width=True
+                           )
+                      else:
+                           st.warning("No hay columnas en los datos para calcular el porcentaje de completitud.")
+
+                 else:
+                      st.info(f"No hay auditorías marcadas como '{'finalizada'}' para calcular el Ranking de Auditores por Información Completa.")
+
+            else:
+                 st.error(f"Falta la columna '{col_auditor}' para calcular el Ranking de Auditores por Información Completa.")
+
+
+    else:
+        # Este mensaje se muestra si el DataFrame está vacío después de recuperarlo de session_state
+        st.warning("⚠️ El archivo Excel cargado está vacío o no contiene datos procesables después de la limpieza inicial.")
 
 
 else:
-    st.warning("⚠️ Por favor, sube un archivo Excel con las auditorías.")
+    # Este mensaje se muestra si 'data' NO está en session_state (es decir, nunca se ha cargado un archivo válido)
+    st.warning("⚠️ Por favor, sube un archivo Excel con los datos de auditoría para comenzar el análisis.")
+
+# --- Fin del script ---
+    
 
 
 
